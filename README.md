@@ -123,7 +123,6 @@ scripts/
   smoke_left_arm.py     # 单臂 + 单相机烟测
   collect_single_arm.py # 单臂 + 单相机采集
   collect_teaching.py   # 示教采集主脚本
-  replay_single_arm.py  # 单臂 Zarr 轨迹回放
   convert_to_lerobot_v3.py
   deploy_policy.py
   set_teaching_mode.py
@@ -569,12 +568,15 @@ python scripts/convert_to_lerobot_v3.py \
 ```bash
 lerobot-dataset-viz \
   --repo-id mamengyiyi/piperx_single_arm_test \
-  --root lerobot_datasets \
+  --root lerobot_datasets/mamengyiyi/piperx_single_arm_test \
   --mode local \
   --episode-index 0
 ```
 
-执行后会打开 Rerun 窗口，显示相机画面、状态和动作。如果你的 `lerobot` 版本还没有
+这里的 `--root` 必须指向包含 `meta/info.json` 的数据集根目录。如果 `--root` 指到
+`lerobot_datasets` 这一层，LeRobot 找不到本地 metadata 时会尝试去 Hugging Face Hub 下载同名数据集，
+没有登录或远端数据集不存在时就会报 401。执行后会打开 Rerun 窗口，显示相机画面、状态和动作。
+如果你的 `lerobot` 版本还没有
 `lerobot-dataset-viz` 命令，先确认安装了完整依赖：
 
 ```bash
@@ -756,7 +758,7 @@ python scripts/convert_to_lerobot_v3.py \
 
 lerobot-dataset-viz \
   --repo-id mamengyiyi/piperx_single_arm_test \
-  --root lerobot_datasets \
+  --root lerobot_datasets/mamengyiyi/piperx_single_arm_test \
   --mode local \
   --episode-index 0
 ```
