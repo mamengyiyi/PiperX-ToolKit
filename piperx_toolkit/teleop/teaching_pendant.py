@@ -10,7 +10,7 @@ logger = logging.getLogger(__name__)
 
 
 class TeachingPendantTeleop:
-    """Read bimanual teaching/master-input arm states as an action source.
+    """Read bimanual arm states as a teaching action source.
 
     This class does not send motion commands. In collection, the collector may
     shift these joint positions forward by one or more frames to create
@@ -23,10 +23,12 @@ class TeachingPendantTeleop:
         self,
         env,
         configure_roles: bool = False,
+        set_motion_output_role: bool = False,
         configure_gripper_params: bool = False,
     ):
         self.env = env
         self.configure_roles = configure_roles
+        self.set_motion_output_role = set_motion_output_role
         self.configure_gripper_params = configure_gripper_params
         self.running = False
 
@@ -34,8 +36,14 @@ class TeachingPendantTeleop:
         if self.configure_gripper_params:
             logger.info("Configuring gripper/teaching-pendant parameters.")
             self.env.configure_gripper_teaching_pendants()
+        if self.set_motion_output_role:
+            logger.info("Setting both arms to motion/slave output role.")
+            self.env.set_motion_output_role()
         if self.configure_roles:
-            logger.info("Setting both arms to teaching/master input role.")
+            logger.warning(
+                "Setting both arms to teaching/master input role. Piper SDK ordinary feedback "
+                "may return zeros in this role; prefer set_motion_output_role for data collection."
+            )
             self.env.set_teaching_input_role()
         self.running = True
 
