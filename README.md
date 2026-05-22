@@ -123,6 +123,7 @@ scripts/
   smoke_left_arm.py     # 单臂 + 单相机烟测
   collect_single_arm.py # 单臂 + 单相机采集
   collect_teaching.py   # 示教采集主脚本
+  replay_single_arm.py  # 单臂 Zarr 轨迹回放
   convert_to_lerobot_v3.py
   deploy_policy.py
   set_teaching_mode.py
@@ -548,10 +549,13 @@ python scripts/convert_to_lerobot_v3.py \
 单臂单相机数据正式转换：
 
 ```bash
+mkdir -p lerobot_datasets/mamengyiyi
+
 python scripts/convert_to_lerobot_v3.py \
   --zarr datasets/single_arm_test.zarr \
-  --output lerobot_datasets/single_arm_test \
+  --output lerobot_datasets/mamengyiyi/piperx_single_arm_test \
   --repo-id mamengyiyi/piperx_single_arm_test \
+  --robot-type piperx_single_arm \
   --fps 30 \
   --task "single arm test" \
   --state joint_pos \
@@ -560,13 +564,34 @@ python scripts/convert_to_lerobot_v3.py \
   --overwrite
 ```
 
+转换后可以用 LeRobot 自带的可视化工具打开本地 episode：
+
+```bash
+lerobot-dataset-viz \
+  --repo-id mamengyiyi/piperx_single_arm_test \
+  --root lerobot_datasets \
+  --mode local \
+  --episode-index 0
+```
+
+执行后会打开 Rerun 窗口，显示相机画面、状态和动作。如果你的 `lerobot` 版本还没有
+`lerobot-dataset-viz` 命令，先确认安装了完整依赖：
+
+```bash
+uv pip install -e ".[hardware,data,lerobot]"
+lerobot-dataset-viz --help
+```
+
 双臂三相机数据正式转换：
 
 ```bash
+mkdir -p lerobot_datasets/mamengyiyi
+
 python scripts/convert_to_lerobot_v3.py \
   --zarr datasets/pick_cube.zarr \
-  --output lerobot_datasets/pick_cube \
+  --output lerobot_datasets/mamengyiyi/piperx_pick_cube \
   --repo-id mamengyiyi/piperx_pick_cube \
+  --robot-type piperx_bimanual \
   --fps 30 \
   --task "pick up the cube" \
   --state left_joint_pos,right_joint_pos \
@@ -583,7 +608,45 @@ python scripts/convert_to_lerobot_v3.py \
 
 ---
 
-## 14. 策略部署
+## 14. 单臂数据回放
+
+如果想把采到的单臂轨迹回放到 PiperX 上，先做 dry-run 看 episode 范围和动作幅度：
+
+```bash
+python scripts/replay_single_arm.py \
+  --zarr datasets/single_arm_test.zarr \
+  --episode 0 \
+  --key action \
+  --can can0
+```
+
+确认第一帧、末帧、最大关节步长都合理后，再真实执行。建议第一次把空间清空、手放在急停附近，
+并让机械臂尽量回到采集开始时附近的位置：
+
+```bash
+python scripts/replay_single_arm.py \
+  --zarr datasets/single_arm_test.zarr \
+  --episode 0 \
+  --key action \
+  --can can0 \
+  --set-motion-output-role \
+  --enable \
+  --approach-start \
+  --speed-ratio 30 \
+  --max-joint-delta-rad 0.08 \
+  --execute
+```
+
+说明：
+
+- `--key action` 会回放采集时生成的下一帧关节目标；也可以改成 `--key joint_pos` 回放原始关节序列。
+- 不加 `--execute` 时脚本只打印统计，不会给机械臂发控制命令。
+- `--approach-start` 会低速插值到 episode 第一帧，避免第一条控制命令跨度太大。
+- 如果 `EnablePiper()` 超时，先检查机械臂供电、急停、CAN 状态以及是否需要重新上电。
+
+---
+
+## 15. 策略部署
 
 部署前，机械臂需要处于可控制的 motion/slave output 模式。
 
@@ -629,7 +692,7 @@ python scripts/deploy_policy.py \
 
 ---
 
-## 15. 推荐上机顺序
+## 16. 推荐上机顺序
 
 第一次上机建议严格按这个顺序：
 
@@ -676,6 +739,26 @@ python scripts/collect_single_arm.py \
 python scripts/convert_to_lerobot_v3.py \
   --zarr datasets/single_arm_test.zarr \
   --dry-run
+
+mkdir -p lerobot_datasets/mamengyiyi
+
+python scripts/convert_to_lerobot_v3.py \
+  --zarr datasets/single_arm_test.zarr \
+  --output lerobot_datasets/mamengyiyi/piperx_single_arm_test \
+  --repo-id mamengyiyi/piperx_single_arm_test \
+  --robot-type piperx_single_arm \
+  --fps 30 \
+  --task "single arm test" \
+  --state joint_pos \
+  --action action \
+  --cameras front \
+  --overwrite
+
+lerobot-dataset-viz \
+  --repo-id mamengyiyi/piperx_single_arm_test \
+  --root lerobot_datasets \
+  --mode local \
+  --episode-index 0
 ```
 
 双臂和三路相机都接好后，再跑完整链路：
@@ -714,7 +797,7 @@ python scripts/convert_to_lerobot_v3.py \
 
 ---
 
-## 16. 当前已实现与预留
+## 17. 当前已实现与预留
 
 已实现：
 
@@ -724,6 +807,7 @@ python scripts/convert_to_lerobot_v3.py \
 - 三路 RGB 相机
 - motion/slave output 本体拖动只读采集
 - 单臂单相机采集脚本
+- 单臂 Zarr 轨迹回放脚本
 - Zarr 数据保存
 - Zarr -> LeRobot v3
 - 策略部署主循环
