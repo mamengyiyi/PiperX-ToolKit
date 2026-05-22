@@ -19,6 +19,8 @@ def main() -> None:
     parser.add_argument("--backend", default="sdk", choices=["sdk", "mock"])
     parser.add_argument("--duration", type=float, default=10.0)
     parser.add_argument("--hz", type=float, default=50.0)
+    parser.add_argument("--set-motion-output-role", action="store_true")
+    parser.add_argument("--set-teaching-input-role", action="store_true")
     parser.add_argument("--camera-backend", default="mock", choices=["mock", "opencv"])
     parser.add_argument("--camera-device", default="2", help="OpenCV index or /dev/video* path for front camera.")
     parser.add_argument("--no-camera", action="store_true", help="Only read the arm; skip camera initialization.")
@@ -47,6 +49,12 @@ def main() -> None:
             }
         )
     arm.connect()
+    if args.set_motion_output_role:
+        arm.set_motion_output_role()
+        time.sleep(0.2)
+    if args.set_teaching_input_role:
+        arm.set_teaching_input_role()
+        time.sleep(0.2)
     if cameras is not None:
         cameras.connect()
         time.sleep(max(0.0, args.camera_warmup_s))
