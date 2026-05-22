@@ -6,8 +6,10 @@ PiperX ToolKit 是一套面向 **双松灵 PiperX 机械臂** 的模仿学习工
 环境控制 -> 遥操作接口 -> 示教数据采集 -> 数据格式转换 -> 模型部署
 ```
 
-当前第一版重点支持 **双臂本体示教采集**：将两条 PiperX 本体切到
-`teaching / master input` 模式，人手直接拖动两条机械臂完成任务，工具包同步记录双臂状态和三路 RGB 相机图像。后续的主从臂遥操作和 VR 遥操作接口已经预留，但暂未实现。
+当前第一版重点支持 **本体拖动示教采集**：将 PiperX 本体切到
+`motion / slave output` 角色，工具包只读取反馈，不下发运动指令；人手直接拖动机械臂完成任务，
+同步记录机械臂状态和 RGB 相机图像。`teaching / master input`、主从臂遥操作和 VR 遥操作接口已经预留，
+但当前推荐的实机采集路径是 `motion / slave output + 手拖本体`。
 
 默认相机为三路 RGB：
 
@@ -115,8 +117,11 @@ piperx_toolkit/
   deploy/               # 策略部署主循环
 scripts/
   doctor.py             # 环境体检
+  probe_cameras.py      # 枚举并测试 OpenCV 相机设备
   inspect_sdk_msgs.py   # 导出 Piper SDK 真实消息结构
   smoke_read.py         # 只读双臂和相机
+  smoke_left_arm.py     # 单臂 + 单相机烟测
+  collect_single_arm.py # 单臂 + 单相机采集
   collect_teaching.py   # 示教采集主脚本
   convert_to_lerobot_v3.py
   deploy_policy.py
@@ -177,6 +182,21 @@ python scripts/doctor.py
 python scripts/doctor.py --check-cameras
 ```
 
+RealSense 一类相机通常会暴露多个 `/dev/video*` 节点，其中只有部分节点能被
+OpenCV 直接作为 RGB 图像读取。可以把 0 到 5 都探测一遍：
+
+```bash
+python scripts/probe_cameras.py --indices 0,1,2,3,4,5
+```
+
+如果你已经知道稳定设备路径，也可以直接探测 `/dev/v4l/by-id/...`：
+
+```bash
+python scripts/probe_cameras.py \
+  --indices "" \
+  --devices /dev/v4l/by-id/xxx-video-index2
+```
+
 ---
 
 ## 7. 配置 CAN 和相机
@@ -214,6 +234,34 @@ cameras:
 ```bash
 python scripts/smoke_read.py --backend sdk --left-can can0 --right-can can1
 ```
+
+如果上机调试时暂时只有一个 CAN 口或只接了一条机械臂，可以使用混合后端：
+
+```bash
+python scripts/smoke_read.py \
+  --backend sdk \
+  --left-can can0 \
+  --left-backend sdk \
+  --right-backend mock \
+  --camera-backend mock \
+  --duration 10
+```
+
+仓库也提供了一个单臂调试配置：
+
+```bash
+python scripts/smoke_read.py --config configs/debug_single_arm.yaml --duration 10
+```
+
+`configs/debug_single_arm.yaml` 默认假设：
+
+- 左臂：真实 `sdk / can0`
+- 右臂：`mock`
+- `front` 相机：OpenCV device `4`，请按 `probe_cameras.py` 的结果改成你机器上可读的 RGB 节点
+- 两个腕部相机：`mock`
+
+这只是为了先把一条真实机械臂、Piper SDK 字段和相机读取链路测通。正式双臂采集前，
+仍然建议使用真实的 `can0 + can1` 和三路真实 RGB 相机。
 
 ---
 
@@ -269,11 +317,29 @@ right_joint_pos          shape=(7,) dtype=float32
 
 ---
 
-## 10. 切到示教模式
+## 10. 采集前机械臂模式
 
-示教采集前，两条 PiperX 本体需要处于 `teaching / master input`，人手可以直接拖动机械臂。
+实机测试发现：PiperX 在 `motion / slave output` 角色下可以被人手拖动，同时 Piper SDK
+仍能稳定读取关节和末端反馈；而切到 `teaching / master input` 后，普通反馈读取可能变成
+全 0。这个现象也和 Piper SDK 官方说明一致：读取关节反馈需要机械臂在 slave 模式。
 
-如果你想通过脚本发送示教角色命令：
+所以当前推荐的示教采集方式是：
+
+```text
+motion/slave output 角色 + 工具包只读状态 + 人手拖动机械臂
+```
+
+采集前可以发送 motion/slave output 角色命令：
+
+```bash
+python scripts/set_motion_mode.py \
+  --backend sdk \
+  --left-can can0 \
+  --right-can can1
+```
+
+如果你在调试 master input 行为，也可以发送 teaching/master input 角色命令，但这个模式不作为
+当前默认采集路径：
 
 ```bash
 python scripts/set_teaching_mode.py \
@@ -289,7 +355,82 @@ python scripts/set_teaching_mode.py \
 
 ## 11. 采集示教数据
 
-确认机械臂可以被手拖动后，运行：
+### 11.1 单臂 + 单相机采集
+
+如果当前只接了一条 PiperX 和一路 `front` RGB 相机，先用这个脚本采数据：
+
+```bash
+python scripts/collect_single_arm.py \
+  --can can0 \
+  --backend sdk \
+  --set-motion-output-role \
+  --camera-backend opencv \
+  --camera-device 4 \
+  --camera-fail-soft \
+  --camera-read-retries 10 \
+  --camera-warmup-s 2 \
+  --dataset datasets/single_arm_test.zarr \
+  --episodes 1 \
+  --duration 15 \
+  --hz 30 \
+  --task "single arm test"
+```
+
+这条命令会自动录制 1 个 15 秒 episode 并保存。你的 RealSense D405 当前实测可读 RGB
+节点是 OpenCV device `4`；如果换相机或重新插拔后编号变化，先重新运行：
+
+```bash
+python scripts/probe_cameras.py --indices 0,1,2,3,4,5
+```
+
+也可以用交互模式采多个 episode。去掉 `--duration` 后，脚本会等待键盘控制：
+
+```bash
+python scripts/collect_single_arm.py \
+  --can can0 \
+  --backend sdk \
+  --set-motion-output-role \
+  --camera-backend opencv \
+  --camera-device 4 \
+  --camera-fail-soft \
+  --camera-read-retries 10 \
+  --camera-warmup-s 2 \
+  --dataset datasets/single_arm_demo.zarr \
+  --episodes 3 \
+  --hz 30 \
+  --task "single arm demo"
+```
+
+交互流程：
+
+```text
+Space  开始录制当前 episode
+Enter  结束当前 episode
+S      保存当前 episode
+D      丢弃当前 episode
+Ctrl+C 退出采集
+```
+
+`--camera-fail-soft` 会在相机偶发读帧失败时使用上一帧补齐；如果相机完全打不开，会写入黑图并打印警告。
+正式采集前建议先用 `smoke_left_arm.py` 确认机械臂和相机都能稳定读取：
+
+```bash
+python scripts/smoke_left_arm.py \
+  --can can0 \
+  --backend sdk \
+  --set-motion-output-role \
+  --camera-backend opencv \
+  --camera-device 4 \
+  --camera-fail-soft \
+  --camera-read-retries 10 \
+  --camera-warmup-s 2 \
+  --duration 10 \
+  --hz 30
+```
+
+### 11.2 双臂 + 三相机采集
+
+确认两条机械臂都可以被手拖动、三路相机都能读到后，运行：
 
 ```bash
 python scripts/collect_teaching.py \
@@ -297,6 +438,7 @@ python scripts/collect_teaching.py \
   --camera-backend opencv \
   --left-can can0 \
   --right-can can1 \
+  --set-motion-output-role \
   --dataset datasets/pick_cube.zarr \
   --episodes 5 \
   --hz 30 \
@@ -326,8 +468,9 @@ Ctrl+C 退出采集
 示教阶段没有真实下发动作，因此数据集中默认写入：
 
 ```text
-action_left[t]  = left_joint_pos[t + 1]
-action_right[t] = right_joint_pos[t + 1]
+单臂数据：action[t]       = joint_pos[t + 1]
+双臂数据：action_left[t]  = left_joint_pos[t + 1]
+双臂数据：action_right[t] = right_joint_pos[t + 1]
 ```
 
 也就是用未来一帧关节位置作为训练目标。默认 `--action-shift-frames 1`，可以按需要调整：
@@ -340,7 +483,25 @@ python scripts/collect_teaching.py ... --action-shift-frames 3
 
 ## 12. Zarr 数据格式
 
-采集后目录类似：
+单臂单相机采集后目录类似：
+
+```text
+datasets/single_arm_test.zarr/
+  data/
+    rgb_front              (N, 3, H, W) uint8
+    joint_pos              (N, 7) float32
+    eef_pos                (N, 7) float32
+    joint_qvel             (N, 7) float32
+    joint_effort           (N, 7) float32
+    action                 (N, 7) float32
+    timestamp              (N,) float64
+    episode                (N,) uint32
+  meta/
+    episode_ends           (M,) uint32
+    config                 JSON attrs
+```
+
+双臂三相机采集后目录类似：
 
 ```text
 datasets/pick_cube.zarr/
@@ -380,11 +541,26 @@ datasets/pick_cube.zarr/
 
 ```bash
 python scripts/convert_to_lerobot_v3.py \
-  --zarr datasets/pick_cube.zarr \
+  --zarr datasets/single_arm_test.zarr \
   --dry-run
 ```
 
-正式转换：
+单臂单相机数据正式转换：
+
+```bash
+python scripts/convert_to_lerobot_v3.py \
+  --zarr datasets/single_arm_test.zarr \
+  --output lerobot_datasets/single_arm_test \
+  --repo-id mamengyiyi/piperx_single_arm_test \
+  --fps 30 \
+  --task "single arm test" \
+  --state joint_pos \
+  --action action \
+  --cameras front \
+  --overwrite
+```
+
+双臂三相机数据正式转换：
 
 ```bash
 python scripts/convert_to_lerobot_v3.py \
@@ -409,7 +585,7 @@ python scripts/convert_to_lerobot_v3.py \
 
 ## 14. 策略部署
 
-部署前，机械臂需要从示教模式切回可控制的 motion/follower 模式。
+部署前，机械臂需要处于可控制的 motion/slave output 模式。
 
 ```bash
 python scripts/set_motion_mode.py \
@@ -462,12 +638,49 @@ source .venv/bin/activate
 
 python scripts/doctor.py --check-cameras
 
+python scripts/probe_cameras.py --indices 0,1,2,3,4,5
+
 python scripts/inspect_sdk_msgs.py \
   --backend sdk \
   --left-can can0 \
   --right-can can1 \
   --out sdk_msgs.json
 
+python scripts/smoke_left_arm.py \
+  --can can0 \
+  --backend sdk \
+  --set-motion-output-role \
+  --camera-backend opencv \
+  --camera-device 4 \
+  --camera-fail-soft \
+  --camera-read-retries 10 \
+  --camera-warmup-s 2 \
+  --duration 10 \
+  --hz 30
+
+python scripts/collect_single_arm.py \
+  --can can0 \
+  --backend sdk \
+  --set-motion-output-role \
+  --camera-backend opencv \
+  --camera-device 4 \
+  --camera-fail-soft \
+  --camera-read-retries 10 \
+  --camera-warmup-s 2 \
+  --dataset datasets/single_arm_test.zarr \
+  --episodes 1 \
+  --duration 15 \
+  --hz 30 \
+  --task "single arm test"
+
+python scripts/convert_to_lerobot_v3.py \
+  --zarr datasets/single_arm_test.zarr \
+  --dry-run
+```
+
+双臂和三路相机都接好后，再跑完整链路：
+
+```bash
 python scripts/smoke_read.py \
   --backend sdk \
   --camera-backend opencv \
@@ -480,6 +693,7 @@ python scripts/collect_teaching.py \
   --camera-backend opencv \
   --left-can can0 \
   --right-can can1 \
+  --set-motion-output-role \
   --dataset datasets/test.zarr \
   --episodes 1 \
   --hz 30 \
@@ -508,7 +722,8 @@ python scripts/convert_to_lerobot_v3.py \
 - Piper SDK 适配层
 - mock 后端
 - 三路 RGB 相机
-- 示教 / master input 只读采集
+- motion/slave output 本体拖动只读采集
+- 单臂单相机采集脚本
 - Zarr 数据保存
 - Zarr -> LeRobot v3
 - 策略部署主循环
