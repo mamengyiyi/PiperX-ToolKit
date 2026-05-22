@@ -6,6 +6,8 @@ import sys
 import time
 from pathlib import Path
 
+import numpy as np
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from piperx_toolkit.env.cameras import CameraConfig, CameraManager
@@ -64,9 +66,21 @@ def main() -> None:
     try:
         last_state = None
         last_image = None
+        first_joint = None
+        first_eef = None
+        max_joint_delta = None
+        max_eef_delta = None
         while time.time() - t0 < args.duration:
             loop_t = time.monotonic()
             last_state = arm.read_state()
+            if first_joint is None:
+                first_joint = last_state.joint_pos.copy()
+                first_eef = last_state.eef_pos.copy()
+                max_joint_delta = np.zeros_like(first_joint)
+                max_eef_delta = np.zeros_like(first_eef)
+            else:
+                max_joint_delta = np.maximum(max_joint_delta, np.abs(last_state.joint_pos - first_joint))
+                max_eef_delta = np.maximum(max_eef_delta, np.abs(last_state.eef_pos - first_eef))
             if cameras is not None:
                 for _ in range(max(1, args.camera_read_retries)):
                     try:
@@ -87,8 +101,16 @@ def main() -> None:
         elapsed = time.time() - t0
         print(f"Read {count} samples in {elapsed:.2f}s ({count / max(elapsed, 1e-6):.1f} Hz)")
         if last_state is not None:
+            if first_joint is not None:
+                print("first_joint_pos:", first_joint)
             print("left_joint_pos:", last_state.joint_pos)
+            if max_joint_delta is not None:
+                print("max_abs_joint_delta:", max_joint_delta)
+            if first_eef is not None:
+                print("first_eef_pos:", first_eef)
             print("left_eef_pos:", last_state.eef_pos)
+            if max_eef_delta is not None:
+                print("max_abs_eef_delta:", max_eef_delta)
             print("left_ctrl_mode:", last_state.ctrl_mode)
         if last_image is not None:
             print("front_color:", last_image.shape, last_image.dtype)
