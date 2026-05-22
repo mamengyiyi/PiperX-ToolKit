@@ -65,7 +65,10 @@ def open_or_create_dataset(path: str, config: ZarrSchemaConfig) -> tuple[Any, An
         ) from exc
 
     exists = os.path.exists(path)
-    root = zarr.open(path, mode="a")
+    try:
+        root = zarr.open(path, mode="a", zarr_format=2)
+    except TypeError:
+        root = zarr.open(path, mode="a")
     data = root.require_group("data")
     meta = root.require_group("meta")
     ensure_schema(data, meta, config)
