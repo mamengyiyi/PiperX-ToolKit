@@ -123,6 +123,8 @@ scripts/
   smoke_left_arm.py     # 单臂 + 单相机烟测
   collect_single_arm.py # 单臂 + 单相机采集
   collect_teaching.py   # 示教采集主脚本
+  replay_single_arm.py  # 单臂 Zarr 轨迹回放
+  deploy_single_arm_policy.py # 单臂 + 单相机策略部署
   convert_to_lerobot_v3.py
   deploy_policy.py
   set_teaching_mode.py
@@ -650,7 +652,86 @@ python scripts/replay_single_arm.py \
 
 ## 15. 策略部署
 
-部署前，机械臂需要处于可控制的 motion/slave output 模式。
+### 15.1 单臂 + 单相机策略部署
+
+如果你用单臂单相机数据训练了 LeRobot policy，部署入口是：
+
+```bash
+python scripts/deploy_single_arm_policy.py \
+  --policy outputs/train/piperx_single_arm/checkpoints/last/pretrained_model \
+  --policy-loader lerobot \
+  --local-files-only \
+  --can can0 \
+  --backend sdk \
+  --set-motion-output-role \
+  --camera-backend opencv \
+  --camera-device 4 \
+  --camera-fail-soft \
+  --camera-read-retries 10 \
+  --camera-warmup-s 2 \
+  --action-mode absolute_joint \
+  --hz 20 \
+  --max-steps 20 \
+  --task "single arm test"
+```
+
+不加 `--execute` 时只会读取机械臂和相机、运行模型推理并打印 action，不会给机械臂发控制命令。
+确认输出 action 是 7 维、数值范围正常后，再真实下发：
+
+```bash
+python scripts/deploy_single_arm_policy.py \
+  --policy outputs/train/piperx_single_arm/checkpoints/last/pretrained_model \
+  --policy-loader lerobot \
+  --local-files-only \
+  --can can0 \
+  --backend sdk \
+  --set-motion-output-role \
+  --enable \
+  --camera-backend opencv \
+  --camera-device 4 \
+  --camera-fail-soft \
+  --camera-read-retries 10 \
+  --camera-warmup-s 2 \
+  --action-mode absolute_joint \
+  --hz 20 \
+  --duration 30 \
+  --speed-ratio 30 \
+  --max-joint-delta-rad 0.08 \
+  --lowpass-alpha 0.8 \
+  --task "single arm test" \
+  --execute
+```
+
+这个脚本默认输入：
+
+```text
+observation.state = joint_pos                 # shape=(7,)
+observation.images.front = front RGB image    # shape=(3,H,W), float32, [0,1]
+action = absolute_joint                       # shape=(7,)
+```
+
+也支持调试用 `.npy` 动作序列：
+
+```bash
+python scripts/deploy_single_arm_policy.py \
+  --policy actions.npy \
+  --policy-loader npy \
+  --can can0 \
+  --no-camera \
+  --max-steps 100 \
+  --execute
+```
+
+安全参数说明：
+
+- `--max-joint-delta-rad` 会限制每个控制周期单个关节最大变化量，默认 `0.08 rad`。
+- `--lowpass-alpha` 会对 action 做低通滤波，越小越平滑，默认 `0.8`。
+- `--local-files-only` 会禁止从 Hugging Face Hub 下载模型，只使用本地 checkpoint。
+- 如果训练时没有用图像，可以加 `--policy-no-image --no-camera`。
+
+### 15.2 双臂策略部署
+
+双臂部署前，机械臂需要处于可控制的 motion/slave output 模式。
 
 ```bash
 python scripts/set_motion_mode.py \
