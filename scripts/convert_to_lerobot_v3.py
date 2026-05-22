@@ -21,6 +21,7 @@ def main() -> None:
     parser.add_argument("--zarr", "-i", required=True)
     parser.add_argument("--output", "-o", default=None)
     parser.add_argument("--repo-id", default=None)
+    parser.add_argument("--robot-type", default="piperx_bimanual")
     parser.add_argument("--fps", type=int, default=30)
     parser.add_argument("--task", default=None)
     parser.add_argument("--state", default="left_joint_pos,right_joint_pos")
@@ -46,6 +47,7 @@ def main() -> None:
         camera_names=split_csv(args.cameras),
         fps=args.fps,
         task=args.task,
+        robot_type=args.robot_type,
         max_episodes=args.episodes,
         use_videos=args.use_videos,
         overwrite=args.overwrite,
