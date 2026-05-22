@@ -1,0 +1,31 @@
+backend: sdk
+camera_backend: mock
+arms:
+  left_can: can0
+  right_can: can1
+  left_backend: sdk
+  right_backend: mock
+enable_on_connect: false
+speed_ratio: 100
+high_follow: true
+gripper_open_raw: 70000
+gripper_closed_raw: 0
+cameras:
+  front:
+    backend: opencv
+    device: 4
+    width: 640
+    height: 480
+    fps: 30
+  left_wrist:
+    backend: mock
+    device: 1
+    width: 640
+    height: 480
+    fps: 30
+  right_wrist:
+    backend: mock
+    device: 2
+    width: 640
+    height: 480
+    fps: 30
