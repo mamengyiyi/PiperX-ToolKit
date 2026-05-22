@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "piperx-toolkit"
+version = "0.1.0"
+description = "PiperX ToolKit for bimanual imitation learning: env, teleop, collection, conversion, and deployment."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "Apache-2.0" }
+dependencies = [
+  "numpy>=1.23",
+]
+
+[project.optional-dependencies]
+hardware = [
+  "piper_sdk>=0.1.9",
+  "python-can>=4.3.1",
+  "opencv-python>=4.8",
+]
+data = [
+  "zarr>=2.16",
+  "numcodecs>=0.11",
+  "pillow>=10",
+]
+lerobot = [
+  "lerobot",
+]
+dev = [
+  "pytest>=7",
+]
+
+[tool.setuptools.packages.find]
+include = ["piperx_toolkit*"]
+

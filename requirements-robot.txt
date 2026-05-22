@@ -1,0 +1,12 @@
+# Fallback dependency list. Prefer:
+#   uv venv --python 3.10
+#   source .venv/bin/activate
+#   uv pip install -e ".[hardware,data]"
+numpy>=1.23
+python-can>=4.3.1
+piper_sdk>=0.1.9
+opencv-python>=4.8
+zarr>=2.16,<3
+numcodecs>=0.11
+pillow>=10
+PyYAML>=6
