@@ -20,6 +20,10 @@ def main() -> None:
     parser.add_argument("--duration", type=float, default=10.0)
     parser.add_argument("--camera-backend", default="mock", choices=["mock", "opencv"])
     parser.add_argument("--camera-device", default="2", help="OpenCV index or /dev/video* path for front camera.")
+    parser.add_argument("--no-camera", action="store_true", help="Only read the arm; skip camera initialization.")
+    parser.add_argument("--camera-fail-soft", action="store_true", help="Keep reading the arm if the camera read fails.")
+    parser.add_argument("--camera-read-retries", type=int, default=3)
+    parser.add_argument("--camera-warmup-s", type=float, default=0.5)
     parser.add_argument("--width", type=int, default=640)
     parser.add_argument("--height", type=int, default=480)
     args = parser.parse_args()
@@ -28,27 +32,43 @@ def main() -> None:
     camera_device: int | str
     camera_device = int(args.camera_device) if args.camera_device.isdigit() else args.camera_device
     arm = PiperArm(PiperArmConfig(name="left", can_name=args.can, backend=args.backend))
-    cameras = CameraManager(
-        {
-            "front": CameraConfig(
-                name="front",
-                backend=args.camera_backend,
-                device=camera_device,
-                width=args.width,
-                height=args.height,
-            )
-        }
-    )
+    cameras = None
+    if not args.no_camera:
+        cameras = CameraManager(
+            {
+                "front": CameraConfig(
+                    name="front",
+                    backend=args.camera_backend,
+                    device=camera_device,
+                    width=args.width,
+                    height=args.height,
+                )
+            }
+        )
     arm.connect()
-    cameras.connect()
+    if cameras is not None:
+        cameras.connect()
+        time.sleep(max(0.0, args.camera_warmup_s))
     count = 0
+    camera_failures = 0
     t0 = time.time()
     try:
         last_state = None
         last_image = None
         while time.time() - t0 < args.duration:
             last_state = arm.read_state()
-            last_image = cameras.read_all()["front"]
+            if cameras is not None:
+                for _ in range(max(1, args.camera_read_retries)):
+                    try:
+                        last_image = cameras.read_all()["front"]
+                        break
+                    except RuntimeError as exc:
+                        camera_failures += 1
+                        last_error = exc
+                        time.sleep(0.02)
+                else:
+                    if not args.camera_fail_soft:
+                        raise last_error
             count += 1
         elapsed = time.time() - t0
         print(f"Read {count} samples in {elapsed:.2f}s ({count / max(elapsed, 1e-6):.1f} Hz)")
@@ -58,8 +78,11 @@ def main() -> None:
             print("left_ctrl_mode:", last_state.ctrl_mode)
         if last_image is not None:
             print("front_color:", last_image.shape, last_image.dtype)
+        if camera_failures:
+            print(f"camera_failures: {camera_failures}")
     finally:
-        cameras.close()
+        if cameras is not None:
+            cameras.close()
         arm.disconnect()
 
 
