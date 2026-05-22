@@ -18,6 +18,7 @@ def main() -> None:
     parser.add_argument("--can", default="can0")
     parser.add_argument("--backend", default="sdk", choices=["sdk", "mock"])
     parser.add_argument("--duration", type=float, default=10.0)
+    parser.add_argument("--hz", type=float, default=50.0)
     parser.add_argument("--camera-backend", default="mock", choices=["mock", "opencv"])
     parser.add_argument("--camera-device", default="2", help="OpenCV index or /dev/video* path for front camera.")
     parser.add_argument("--no-camera", action="store_true", help="Only read the arm; skip camera initialization.")
@@ -56,6 +57,7 @@ def main() -> None:
         last_state = None
         last_image = None
         while time.time() - t0 < args.duration:
+            loop_t = time.monotonic()
             last_state = arm.read_state()
             if cameras is not None:
                 for _ in range(max(1, args.camera_read_retries)):
@@ -70,6 +72,10 @@ def main() -> None:
                     if not args.camera_fail_soft:
                         raise last_error
             count += 1
+            if args.hz > 0:
+                sleep_s = (1.0 / args.hz) - (time.monotonic() - loop_t)
+                if sleep_s > 0:
+                    time.sleep(sleep_s)
         elapsed = time.time() - t0
         print(f"Read {count} samples in {elapsed:.2f}s ({count / max(elapsed, 1e-6):.1f} Hz)")
         if last_state is not None:
