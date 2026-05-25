@@ -84,6 +84,7 @@ def convert_zarr_to_lerobot(
     state_keys: list[str] | None = None,
     action_keys: list[str] | None = None,
     camera_names: list[str] | None = None,
+    camera_aliases: dict[str, str] | None = None,
     fps: int = 30,
     task: str | None = None,
     robot_type: str = "piperx_bimanual",
@@ -103,6 +104,7 @@ def convert_zarr_to_lerobot(
     state_keys = state_keys or ["left_joint_pos", "right_joint_pos"]
     action_keys = action_keys or ["action_left", "action_right"]
     camera_names = camera_names or cameras
+    camera_aliases = camera_aliases or {}
     task = task or _meta_config(meta).get("task") or Path(zarr_path).stem
 
     for key in state_keys + action_keys:
@@ -132,7 +134,8 @@ def convert_zarr_to_lerobot(
         "action": {"dtype": "float32", "shape": (action_dim,), "names": ["action"]},
     }
     for cam in camera_names:
-        features[f"observation.images.{cam}"] = {
+        feature_cam = camera_aliases.get(cam, cam)
+        features[f"observation.images.{feature_cam}"] = {
             "dtype": image_dtype,
             "shape": image_shape,
             "names": ["height", "width", "channel"],
@@ -161,10 +164,10 @@ def convert_zarr_to_lerobot(
             }
             for cam in camera_names:
                 img = camera_batches[cam][i].transpose(1, 2, 0)
-                frame[f"observation.images.{cam}"] = img if use_videos else Image.fromarray(img)
+                feature_cam = camera_aliases.get(cam, cam)
+                frame[f"observation.images.{feature_cam}"] = img if use_videos else Image.fromarray(img)
             dataset.add_frame(frame)
         dataset.save_episode()
         print(f"Converted episode {ep_idx}: {end - start} frames")
 
     return dataset
-
