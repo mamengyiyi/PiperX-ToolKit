@@ -8,8 +8,8 @@ PiperX ToolKit 是一套面向 **双松灵 PiperX 机械臂** 的模仿学习工
 
 当前第一版重点支持 **本体拖动示教采集**：将 PiperX 本体切到
 `motion / slave output` 角色，工具包只读取反馈，不下发运动指令；人手直接拖动机械臂完成任务，
-同步记录机械臂状态和 RGB 相机图像。`teaching / master input`、主从臂遥操作和 VR 遥操作接口已经预留，
-但当前推荐的实机采集路径是 `motion / slave output + 手拖本体`。
+同步记录机械臂状态和 RGB 相机图像。现在也提供 **PiperX 主从臂遥操作**：支持单主臂控制单从臂，
+也支持双主臂控制双从臂。VR 遥操作接口已预留，后续可继续接入。
 
 默认相机为三路 RGB：
 
@@ -111,7 +111,7 @@ source .venv/bin/activate
 ```text
 piperx_toolkit/
   env/                  # 双臂环境、Piper SDK 适配、单位转换、相机后端
-  teleop/               # 遥操作接口；当前实现 teaching_pendant
+  teleop/               # 遥操作接口；当前实现 teaching_pendant 和 leader_follower
   collect/              # Zarr 数据采集与 schema
   convert/              # Zarr -> LeRobot v3
   deploy/               # 策略部署主循环
@@ -121,6 +121,8 @@ scripts/
   inspect_sdk_msgs.py   # 导出 Piper SDK 真实消息结构
   smoke_read.py         # 只读双臂和相机
   smoke_left_arm.py     # 单臂 + 单相机烟测
+  teleop_single_arm.py  # 单主臂 -> 单从臂遥操作
+  teleop_bimanual.py    # 双主臂 -> 双从臂遥操作
   collect_single_arm.py # 单臂 + 单相机采集
   collect_teaching.py   # 示教采集主脚本
   replay_single_arm.py  # 单臂 Zarr 轨迹回放
@@ -355,9 +357,165 @@ python scripts/set_teaching_mode.py \
 
 ---
 
-## 11. 采集示教数据
+## 11. 主从臂遥操作
 
-### 11.1 单臂 + 单相机采集
+主从臂遥操作参考了 [Evo-RL](https://github.com/MINT-SJTU/Evo-RL) 对 PiPER/PiPER-X 的处理方式：PiPER 在
+`teaching / master input` 下可能无法稳定接收外部控制命令，也可能读不到完整反馈；因此主臂和从臂都切到
+`motion / slave output (0xFC)`，主臂只读关节反馈，从臂接收关节目标。
+
+遥操作当前采用关节空间映射：
+
+```text
+follower_target = leader_joint_pos * joint_signs + joint_offsets
+```
+
+默认 `joint_signs=1,1,1,1,1,1,1`、`joint_offsets=0,0,0,0,0,0,0`。如果左右安装方向、夹爪方向或某些关节
+需要镜像，可以通过 signs/offsets 调整。第 7 维为夹爪，始终会裁剪到 `[0, 1]`。
+
+### 11.1 单主臂控制单从臂
+
+假设：
+
+- 主臂 CAN：`can0`
+- 从臂 CAN：`can1`
+
+先 dry-run，只读主从臂并打印将要发送的目标，不控制从臂：
+
+```bash
+python scripts/teleop_single_arm.py \
+  --leader-can can0 \
+  --follower-can can1 \
+  --leader-backend sdk \
+  --follower-backend sdk \
+  --set-motion-output-role \
+  --hz 30 \
+  --max-steps 100
+```
+
+确认读数正常、`max_err` 合理后，再真实执行。第一次建议把两条机械臂手动摆到相近姿态，或者使用
+`--approach-start` 让从臂低速靠近主臂当前姿态：
+
+```bash
+python scripts/teleop_single_arm.py \
+  --leader-can can0 \
+  --follower-can can1 \
+  --leader-backend sdk \
+  --follower-backend sdk \
+  --set-motion-output-role \
+  --approach-start \
+  --speed-ratio 30 \
+  --max-joint-delta-rad 0.08 \
+  --lowpass-alpha 0.8 \
+  --hz 30 \
+  --execute
+```
+
+如果实际机构需要镜像某个关节，例如第 2 个关节取反：
+
+```bash
+python scripts/teleop_single_arm.py \
+  --leader-can can0 \
+  --follower-can can1 \
+  --joint-signs "1,-1,1,1,1,1,1" \
+  --execute
+```
+
+也可以用 offset 修正零位差，例如：
+
+```bash
+python scripts/teleop_single_arm.py \
+  --leader-can can0 \
+  --follower-can can1 \
+  --joint-offsets "0,0.15,0,0,0,0,0" \
+  --execute
+```
+
+### 11.2 双主臂控制双从臂
+
+默认假设四个 CAN 口：
+
+- 左主臂：`can0`
+- 左从臂：`can1`
+- 右主臂：`can2`
+- 右从臂：`can3`
+
+先 dry-run：
+
+```bash
+python scripts/teleop_bimanual.py \
+  --left-leader-can can0 \
+  --left-follower-can can1 \
+  --right-leader-can can2 \
+  --right-follower-can can3 \
+  --leader-backend sdk \
+  --follower-backend sdk \
+  --set-motion-output-role \
+  --hz 30 \
+  --max-steps 100
+```
+
+再真实执行：
+
+```bash
+python scripts/teleop_bimanual.py \
+  --left-leader-can can0 \
+  --left-follower-can can1 \
+  --right-leader-can can2 \
+  --right-follower-can can3 \
+  --leader-backend sdk \
+  --follower-backend sdk \
+  --set-motion-output-role \
+  --approach-start \
+  --speed-ratio 30 \
+  --max-joint-delta-rad 0.08 \
+  --lowpass-alpha 0.8 \
+  --hz 30 \
+  --execute
+```
+
+左右两侧可以分别设置映射：
+
+```bash
+python scripts/teleop_bimanual.py \
+  --left-leader-can can0 \
+  --left-follower-can can1 \
+  --right-leader-can can2 \
+  --right-follower-can can3 \
+  --left-joint-signs "1,1,1,1,1,1,1" \
+  --right-joint-signs "1,-1,1,1,1,1,1" \
+  --execute
+```
+
+重要安全参数：
+
+- 不加 `--execute` 时只读和打印，不会控制从臂。
+- `--require-near-rad` 默认 `0.35`，如果从臂和映射后的主臂姿态差太多，会拒绝直接执行。
+- `--approach-start` 会先低速靠近主臂当前姿态，再进入实时遥操作。
+- `--max-joint-delta-rad` 默认 `0.08 rad`，限制每个控制周期单关节最大变化量。
+- `--lowpass-alpha` 默认 `0.8`，用于平滑关节命令；`1.0` 等于不做低通。
+- `--speed-ratio` 默认 `30`，建议第一次上机先保持低速。
+
+离线 mock 自检：
+
+```bash
+python scripts/teleop_single_arm.py \
+  --leader-backend mock \
+  --follower-backend mock \
+  --no-set-motion-output-role \
+  --max-steps 5
+
+python scripts/teleop_bimanual.py \
+  --leader-backend mock \
+  --follower-backend mock \
+  --no-set-motion-output-role \
+  --max-steps 5
+```
+
+---
+
+## 12. 采集示教数据
+
+### 12.1 单臂 + 单相机采集
 
 如果当前只接了一条 PiperX 和一路 `front` RGB 相机，先用这个脚本采数据：
 
@@ -430,7 +588,7 @@ python scripts/smoke_left_arm.py \
   --hz 30
 ```
 
-### 11.2 双臂 + 三相机采集
+### 12.2 双臂 + 三相机采集
 
 确认两条机械臂都可以被手拖动、三路相机都能读到后，运行：
 
@@ -483,7 +641,7 @@ python scripts/collect_teaching.py ... --action-shift-frames 3
 
 ---
 
-## 12. Zarr 数据格式
+## 13. Zarr 数据格式
 
 单臂单相机采集后目录类似：
 
@@ -537,7 +695,7 @@ datasets/pick_cube.zarr/
 
 ---
 
-## 13. 转换为 LeRobot v3
+## 14. 转换为 LeRobot v3
 
 先查看 Zarr 内容：
 
@@ -612,7 +770,7 @@ python scripts/convert_to_lerobot_v3.py \
 
 ---
 
-## 14. 单臂数据回放
+## 15. 单臂数据回放
 
 如果想把采到的单臂轨迹回放到 PiperX 上，先做 dry-run 看 episode 范围和动作幅度：
 
@@ -650,9 +808,9 @@ python scripts/replay_single_arm.py \
 
 ---
 
-## 15. 策略部署
+## 16. 策略部署
 
-### 15.1 单臂 + 单相机策略部署
+### 16.1 单臂 + 单相机策略部署
 
 如果你用单臂单相机数据训练了 LeRobot policy，部署入口是：
 
@@ -729,7 +887,7 @@ python scripts/deploy_single_arm_policy.py \
 - `--local-files-only` 会禁止从 Hugging Face Hub 下载模型，只使用本地 checkpoint。
 - 如果训练时没有用图像，可以加 `--policy-no-image --no-camera`。
 
-### 15.2 双臂策略部署
+### 16.2 双臂策略部署
 
 双臂部署前，机械臂需要处于可控制的 motion/slave output 模式。
 
@@ -775,7 +933,7 @@ python scripts/deploy_policy.py \
 
 ---
 
-## 16. 推荐上机顺序
+## 17. 推荐上机顺序
 
 第一次上机建议严格按这个顺序：
 
@@ -880,7 +1038,7 @@ python scripts/convert_to_lerobot_v3.py \
 
 ---
 
-## 17. 当前已实现与预留
+## 18. 当前已实现与预留
 
 已实现：
 
@@ -889,6 +1047,8 @@ python scripts/convert_to_lerobot_v3.py \
 - mock 后端
 - 三路 RGB 相机
 - motion/slave output 本体拖动只读采集
+- 单主臂 -> 单从臂遥操作
+- 双主臂 -> 双从臂遥操作
 - 单臂单相机采集脚本
 - 单臂 Zarr 轨迹回放脚本
 - Zarr 数据保存
@@ -898,6 +1058,5 @@ python scripts/convert_to_lerobot_v3.py \
 
 预留但暂未实现：
 
-- 主从臂遥操作
 - VR 遥操作
 - 更完整的力矩 / 电流反馈解析
