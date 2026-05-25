@@ -37,6 +37,11 @@ class StepResult:
     follower_joint_pos: np.ndarray
     target_joint_pos: np.ndarray
     command_joint_pos: np.ndarray
+    leader_eef_pos: np.ndarray | None = None
+    follower_eef_pos: np.ndarray | None = None
+    follower_joint_qvel: np.ndarray | None = None
+    follower_joint_effort: np.ndarray | None = None
+    timestamp: float | None = None
 
     @property
     def max_abs_error_rad(self) -> float:
@@ -131,18 +136,25 @@ class LeaderFollowerPair:
         return leader_state.joint_pos, follower_state.joint_pos, target
 
     def step(self, execute: bool = True) -> StepResult:
-        leader_joint, follower_joint, target = self.read_target()
-        command = limit_joint_step(target, follower_joint, self.max_joint_delta_rad)
+        leader_state = self.leader.read_state()
+        follower_state = self.follower.read_state()
+        target = self.mapping.apply(leader_state.joint_pos)
+        command = limit_joint_step(target, follower_state.joint_pos, self.max_joint_delta_rad)
         command = lowpass(command, self.previous_command, self.lowpass_alpha)
         command[6] = target[6]
         if execute:
             self.follower.send_joint_target(command)
         self.previous_command = command.copy()
         return StepResult(
-            leader_joint_pos=leader_joint.copy(),
-            follower_joint_pos=follower_joint.copy(),
+            leader_joint_pos=leader_state.joint_pos.copy(),
+            follower_joint_pos=follower_state.joint_pos.copy(),
             target_joint_pos=target.copy(),
             command_joint_pos=command.copy(),
+            leader_eef_pos=leader_state.eef_pos.copy(),
+            follower_eef_pos=follower_state.eef_pos.copy(),
+            follower_joint_qvel=follower_state.joint_qvel.copy(),
+            follower_joint_effort=follower_state.joint_effort.copy(),
+            timestamp=follower_state.timestamp,
         )
 
     def approach_to_leader(
