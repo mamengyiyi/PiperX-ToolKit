@@ -16,6 +16,18 @@ def split_csv(value: str | None) -> list[str] | None:
     return [item.strip() for item in value.split(",") if item.strip()]
 
 
+def parse_aliases(value: str | None) -> dict[str, str] | None:
+    if not value:
+        return None
+    aliases: dict[str, str] = {}
+    for item in split_csv(value) or []:
+        if "=" not in item:
+            raise argparse.ArgumentTypeError(f"Camera alias must be source=target, got {item!r}")
+        source, target = item.split("=", 1)
+        aliases[source.strip()] = target.strip()
+    return aliases
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Convert PiperX ToolKit Zarr dataset to LeRobot v3.")
     parser.add_argument("--zarr", "-i", required=True)
@@ -27,6 +39,11 @@ def main() -> None:
     parser.add_argument("--state", default="left_joint_pos,right_joint_pos")
     parser.add_argument("--action", default="action_left,action_right")
     parser.add_argument("--cameras", default="front,left_wrist,right_wrist")
+    parser.add_argument(
+        "--camera-aliases",
+        default=None,
+        help="Optional source=target camera feature aliases, e.g. front=cam_high,left_wrist=cam_left_wrist.",
+    )
     parser.add_argument("--episodes", type=int, default=None)
     parser.add_argument("--use-videos", action="store_true")
     parser.add_argument("--overwrite", action="store_true")
@@ -45,6 +62,7 @@ def main() -> None:
         state_keys=split_csv(args.state),
         action_keys=split_csv(args.action),
         camera_names=split_csv(args.cameras),
+        camera_aliases=parse_aliases(args.camera_aliases),
         fps=args.fps,
         task=args.task,
         robot_type=args.robot_type,
