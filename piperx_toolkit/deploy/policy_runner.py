@@ -93,6 +93,8 @@ class PolicyRunner:
         hz: float = 20.0,
         guard_motion_mode: bool = True,
         limiter: ActionLimiter | None = None,
+        execute: bool = True,
+        print_every: int = 0,
     ):
         self.env = env
         self.policy = policy
@@ -100,9 +102,11 @@ class PolicyRunner:
         self.hz = hz
         self.guard_motion_mode = guard_motion_mode
         self.limiter = limiter or ActionLimiter()
+        self.execute = execute
+        self.print_every = print_every
 
     def run(self, max_steps: int | None = None) -> None:
-        if self.guard_motion_mode:
+        if self.execute and self.guard_motion_mode:
             self.env.guard_can_accept_motion()
         dt = 1.0 / self.hz
         previous_action: dict[str, np.ndarray | None] | None = None
@@ -117,7 +121,18 @@ class PolicyRunner:
                 action = split_bimanual_action(raw_action)
                 if self.action_mode == "absolute_joint":
                     action = self.limiter.filter(action, obs, previous_action)
-                obs = self.env.step(action, action_mode=self.action_mode, return_observation=True)
+                if self.execute:
+                    obs = self.env.step(action, action_mode=self.action_mode, return_observation=True)
+                else:
+                    obs = self.env.get_observation()
+                if self.print_every > 0 and (step == 0 or (step + 1) % self.print_every == 0):
+                    left = action["left"]
+                    right = action["right"]
+                    print(
+                        f"step={step + 1:06d} "
+                        f"left={np.array2string(left, precision=4, suppress_small=True) if left is not None else None} "
+                        f"right={np.array2string(right, precision=4, suppress_small=True) if right is not None else None}"
+                    )
                 previous_action = action
                 step += 1
                 sleep_s = dt - (time.monotonic() - t0)
@@ -125,4 +140,3 @@ class PolicyRunner:
                     time.sleep(sleep_s)
         except KeyboardInterrupt:
             return
-
