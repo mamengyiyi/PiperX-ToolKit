@@ -20,6 +20,9 @@ from piperx_toolkit.env.piper_arm import PiperArmConfig
 from piperx_toolkit.teleop.leader_follower import JointMapping, LeaderFollowerPair, StepResult
 from piperx_toolkit.utils.logging import setup_logging
 
+DEFAULT_FRONT_DEVICE = "10"
+DEFAULT_FOLLOWER_WRIST_DEVICE = "14"
+
 
 class KeyboardListener:
     def __init__(self):
@@ -75,29 +78,43 @@ def ensure_rgb_size(image: np.ndarray, width: int, height: int) -> np.ndarray:
     return cv2.resize(image, (width, height), interpolation=cv2.INTER_AREA)
 
 
-def make_camera(args: argparse.Namespace) -> CameraManager:
-    return CameraManager(
-        {
-            "front": CameraConfig(
-                name="front",
-                backend=args.camera_backend,
-                device=camera_device_arg(args.camera_device),
-                width=args.width,
-                height=args.height,
-                fps=int(args.hz),
-            )
-        }
-    )
+def camera_devices(args: argparse.Namespace) -> dict[str, str]:
+    front_device = args.camera_device or args.front_device
+    return {
+        "front": front_device,
+        args.follower_wrist_camera: args.follower_wrist_device,
+    }
 
 
-def connect_camera(args: argparse.Namespace) -> CameraManager | None:
+def make_cameras(args: argparse.Namespace) -> CameraManager:
+    configs = {}
+    for name, device in camera_devices(args).items():
+        if str(device).strip() == "":
+            continue
+        configs[name] = CameraConfig(
+            name=name,
+            backend=args.camera_backend,
+            device=camera_device_arg(device),
+            width=args.width,
+            height=args.height,
+            fps=int(args.hz),
+        )
+    return CameraManager(configs)
+
+
+def connect_cameras(args: argparse.Namespace) -> CameraManager | None:
     if args.no_camera:
-        print("Camera disabled by --no-camera; rgb_front will be filled with black frames.")
+        print("Camera disabled by --no-camera; camera streams will be filled with black frames.")
+        return None
+
+    configured = {name: device for name, device in camera_devices(args).items() if str(device).strip()}
+    if not configured:
+        print("No camera devices configured; camera streams will be filled with black frames.")
         return None
 
     last_error: Exception | None = None
     for attempt in range(1, args.camera_open_retries + 1):
-        cameras = make_camera(args)
+        cameras = make_cameras(args)
         try:
             cameras.connect()
             time.sleep(max(0.0, args.camera_warmup_s))
@@ -113,7 +130,7 @@ def connect_camera(args: argparse.Namespace) -> CameraManager | None:
                 time.sleep(max(0.0, args.camera_open_retry_s))
 
     if args.camera_fail_soft:
-        print(f"WARNING: could not open camera; rgb_front will be black. Last error: {last_error}")
+        print(f"WARNING: could not open cameras; camera streams will be black. Last error: {last_error}")
         return None
     if last_error is not None:
         raise last_error
@@ -133,8 +150,17 @@ def open_or_create_dataset(path: str, args: argparse.Namespace) -> tuple[Any, An
     data = root.require_group("data")
     meta = root.require_group("meta")
     image_shape = (3, args.height, args.width)
+    camera_names = tuple(camera_devices(args))
+    existing_len = len(data["timestamp"]) if "timestamp" in data else 0
 
-    require_array(data, "rgb_front", image_shape, np.uint8, chunks=(1, *image_shape))
+    for cam in camera_names:
+        key = f"rgb_{cam}"
+        if existing_len > 0 and key not in data:
+            raise RuntimeError(
+                f"Existing dataset {path} has {existing_len} frames but is missing {key}. "
+                "Use a new --dataset path after changing camera schema."
+            )
+        require_array(data, key, image_shape, np.uint8, chunks=(1, *image_shape))
     for key in (
         "joint_pos",
         "eef_pos",
@@ -160,9 +186,8 @@ def open_or_create_dataset(path: str, args: argparse.Namespace) -> tuple[Any, An
             "follower_can": args.follower_can,
             "leader_backend": args.leader_backend,
             "follower_backend": args.follower_backend,
-            "camera": "front",
+            "cameras": camera_devices(args),
             "camera_backend": args.camera_backend,
-            "camera_device": str(args.camera_device),
             "image_size": [args.width, args.height],
             "hz": args.hz,
             "task": args.task,
@@ -179,8 +204,7 @@ def open_or_create_dataset(path: str, args: argparse.Namespace) -> tuple[Any, An
 
 
 def empty_buffer() -> dict[str, list[np.ndarray]]:
-    return {
-        "rgb_front": [],
+    out: dict[str, list[np.ndarray]] = {
         "joint_pos": [],
         "eef_pos": [],
         "joint_qvel": [],
@@ -193,6 +217,7 @@ def empty_buffer() -> dict[str, list[np.ndarray]]:
         "timestamp": [],
         "episode": [],
     }
+    return out
 
 
 def _array_or_zeros(value: np.ndarray | None) -> np.ndarray:
@@ -208,8 +233,8 @@ def capture_step(
     buffer: dict[str, list[np.ndarray]],
     episode_id: int,
     args: argparse.Namespace,
-    last_good_image: np.ndarray | None,
-) -> tuple[np.ndarray | None, int, StepResult]:
+    last_good_images: dict[str, np.ndarray | None],
+) -> tuple[dict[str, np.ndarray | None], int, StepResult]:
     result = pair.step(execute=execute)
     buffer["joint_pos"].append(result.follower_joint_pos.reshape(1, 7).astype(np.float32))
     buffer["eef_pos"].append(_array_or_zeros(result.follower_eef_pos).reshape(1, 7))
@@ -224,12 +249,15 @@ def capture_step(
     buffer["episode"].append(np.array([episode_id], dtype=np.uint32))
 
     camera_failures = 0
-    image = last_good_image
+    images = dict(last_good_images)
     if cameras is not None:
         last_error: Exception | None = None
         for _ in range(max(1, args.camera_read_retries)):
             try:
-                image = ensure_rgb_size(cameras.read_all()["front"], args.width, args.height)
+                raw = cameras.read_all()
+                for name, image in raw.items():
+                    if name in camera_devices(args):
+                        images[name] = ensure_rgb_size(image, args.width, args.height)
                 break
             except RuntimeError as exc:
                 camera_failures += 1
@@ -238,10 +266,14 @@ def capture_step(
         else:
             if not args.camera_fail_soft and last_error is not None:
                 raise last_error
-    if image is None:
-        image = np.zeros((args.height, args.width, 3), dtype=np.uint8)
-    buffer["rgb_front"].append(image.transpose(2, 0, 1)[None])
-    return image, camera_failures, result
+
+    for cam in camera_devices(args):
+        image = images.get(cam)
+        if image is None:
+            image = np.zeros((args.height, args.width, 3), dtype=np.uint8)
+        buffer[f"rgb_{cam}"].append(image.transpose(2, 0, 1)[None])
+        images[cam] = image
+    return images, camera_failures, result
 
 
 def finalize_buffer(
@@ -292,14 +324,16 @@ def record_for_duration(
     duration_s: float,
 ) -> tuple[EpisodeStats, dict[str, np.ndarray]]:
     buffer = empty_buffer()
+    for cam in camera_devices(args):
+        buffer[f"rgb_{cam}"] = []
     dt = 1.0 / max(args.hz, 1e-6)
     t0 = time.time()
     deadline = time.monotonic() + duration_s
-    last_good_image = None
+    last_good_images = {cam: None for cam in camera_devices(args)}
     camera_failures = 0
     while time.monotonic() < deadline:
         loop_t = time.monotonic()
-        last_good_image, failures, _ = capture_step(pair, execute, cameras, buffer, episode_id, args, last_good_image)
+        last_good_images, failures, _ = capture_step(pair, execute, cameras, buffer, episode_id, args, last_good_images)
         camera_failures += failures
         sleep_s = dt - (time.monotonic() - loop_t)
         if sleep_s > 0:
@@ -326,9 +360,11 @@ def record_interactive(
 
     print(f"\r\nRecording episode {episode_id}. Press Enter to stop.\r\n")
     buffer = empty_buffer()
+    for cam in camera_devices(args):
+        buffer[f"rgb_{cam}"] = []
     dt = 1.0 / max(args.hz, 1e-6)
     t0 = time.time()
-    last_good_image = None
+    last_good_images = {cam: None for cam in camera_devices(args)}
     camera_failures = 0
     while True:
         loop_t = time.monotonic()
@@ -337,7 +373,7 @@ def record_interactive(
             break
         if key == "\x03":
             raise KeyboardInterrupt
-        last_good_image, failures, _ = capture_step(pair, execute, cameras, buffer, episode_id, args, last_good_image)
+        last_good_images, failures, _ = capture_step(pair, execute, cameras, buffer, episode_id, args, last_good_images)
         camera_failures += failures
         sleep_s = dt - (time.monotonic() - loop_t)
         if sleep_s > 0:
@@ -408,7 +444,14 @@ def main() -> None:
     parser.add_argument("--start-tolerance-rad", type=float, default=0.04)
     parser.add_argument("--execute", action="store_true", help="Actually send commands to the follower arm.")
     parser.add_argument("--camera-backend", default="opencv", choices=["mock", "opencv"])
-    parser.add_argument("--camera-device", default="4", help="OpenCV index or /dev/v4l/by-id/* path for front camera.")
+    parser.add_argument("--front-device", default=DEFAULT_FRONT_DEVICE, help="OpenCV index or /dev/v4l/by-id/* path for main/front camera.")
+    parser.add_argument(
+        "--follower-wrist-device",
+        default=DEFAULT_FOLLOWER_WRIST_DEVICE,
+        help="OpenCV index or /dev/v4l/by-id/* path for follower wrist camera. Default 14 assumes right arm is leader and left arm is follower.",
+    )
+    parser.add_argument("--follower-wrist-camera", default="left_wrist", choices=["left_wrist", "right_wrist", "wrist"])
+    parser.add_argument("--camera-device", default=None, help="Deprecated alias for --front-device.")
     parser.add_argument("--camera-fail-soft", action="store_true")
     parser.add_argument("--camera-open-retries", type=int, default=3)
     parser.add_argument("--camera-open-retry-s", type=float, default=0.5)
@@ -423,7 +466,7 @@ def main() -> None:
     os.makedirs(os.path.dirname(args.dataset) or ".", exist_ok=True)
     data, meta, start_episode = open_or_create_dataset(args.dataset, args)
     pair = make_pair(args)
-    cameras = connect_camera(args)
+    cameras = connect_cameras(args)
 
     try:
         prepare_pair(pair, args.execute, args)
