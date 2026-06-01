@@ -61,27 +61,126 @@ def predict_with_policy(policy: Any, images: dict[str, np.ndarray], state: np.nd
     raise TypeError("Policy must be callable or expose predict(images, state)")
 
 
+def _clip_gripper(value: float) -> float:
+    return float(np.clip(value, 0.0, 1.0))
+
+
+def _lowpass(
+    current: np.ndarray,
+    previous: np.ndarray | None,
+    alpha: float,
+) -> np.ndarray:
+    if previous is None or alpha >= 1.0:
+        return current
+    alpha = float(np.clip(alpha, 0.0, 1.0))
+    return (alpha * current + (1.0 - alpha) * previous).astype(np.float32)
+
+
+def _clip_vector_delta(delta: np.ndarray, max_norm: float) -> np.ndarray:
+    if max_norm <= 0:
+        return delta
+    norm = float(np.linalg.norm(delta))
+    if norm <= max_norm:
+        return delta
+    return (delta * (max_norm / norm)).astype(np.float32)
+
+
 @dataclass
 class ActionLimiter:
     max_joint_delta_rad: float = 0.15
     lowpass_alpha: float = 1.0
 
     def filter(self, action: dict[str, np.ndarray | None], current_obs: dict[str, np.ndarray], previous: dict[str, np.ndarray | None] | None) -> dict[str, np.ndarray | None]:
+        return BimanualActionSmoother(
+            action_mode="absolute_joint",
+            max_joint_delta_rad=self.max_joint_delta_rad,
+            lowpass_alpha=self.lowpass_alpha,
+        ).filter(action, current_obs, previous)
+
+
+@dataclass
+class BimanualActionSmoother:
+    """Mode-aware action smoothing for bimanual deployment."""
+
+    action_mode: str = "absolute_joint"
+    max_joint_delta_rad: float = 0.08
+    max_eef_linear_delta_m: float = 0.03
+    max_eef_angular_delta_rad: float = 0.15
+    max_delta_eef_linear_m: float = 0.02
+    max_delta_eef_angular_rad: float = 0.10
+    max_gripper_delta: float = 0.15
+    lowpass_alpha: float = 0.8
+
+    def filter(
+        self,
+        action: dict[str, np.ndarray | None],
+        current_obs: dict[str, np.ndarray],
+        previous: dict[str, np.ndarray | None] | None,
+    ) -> dict[str, np.ndarray | None]:
+        mode = str(self.action_mode).strip().lower()
         out: dict[str, np.ndarray | None] = {"left": None, "right": None}
         for side in ("left", "right"):
-            target = action[side]
+            target = action.get(side)
             if target is None:
                 continue
-            target = target.astype(np.float32).copy()
-            target[6] = float(np.clip(target[6], 0.0, 1.0))
-            current = np.asarray(current_obs[f"{side}_joint_pos"], dtype=np.float32)
-            delta = np.clip(target[:6] - current[:6], -self.max_joint_delta_rad, self.max_joint_delta_rad)
-            limited = target.copy()
-            limited[:6] = current[:6] + delta
-            if previous is not None and previous.get(side) is not None and self.lowpass_alpha < 1.0:
-                limited = self.lowpass_alpha * limited + (1.0 - self.lowpass_alpha) * previous[side]
-            out[side] = limited.astype(np.float32)
+            prev = previous.get(side) if previous is not None else None
+            if mode == "absolute_joint":
+                smoothed = self._smooth_absolute_joint(target, current_obs, side, prev)
+            elif mode == "absolute_eef":
+                smoothed = self._smooth_absolute_eef(target, current_obs, side, prev)
+            elif mode == "delta_eef":
+                smoothed = self._smooth_delta_eef(target, prev)
+            elif mode == "smooth_eef":
+                smoothed = self._smooth_absolute_eef(target, current_obs, side, prev)
+            else:
+                raise ValueError(f"Unsupported action_mode for smoothing: {mode}")
+            out[side] = smoothed
         return out
+
+    def _smooth_absolute_joint(
+        self,
+        target: np.ndarray,
+        current_obs: dict[str, np.ndarray],
+        side: str,
+        previous: np.ndarray | None,
+    ) -> np.ndarray:
+        target = np.asarray(target, dtype=np.float32).copy()
+        target[6] = _clip_gripper(target[6])
+        current = np.asarray(current_obs[f"{side}_joint_pos"], dtype=np.float32)
+        if self.max_joint_delta_rad > 0:
+            delta = np.clip(target[:6] - current[:6], -self.max_joint_delta_rad, self.max_joint_delta_rad)
+            target[:6] = current[:6] + delta
+        if self.max_gripper_delta > 0:
+            gripper_delta = float(np.clip(target[6] - current[6], -self.max_gripper_delta, self.max_gripper_delta))
+            target[6] = _clip_gripper(current[6] + gripper_delta)
+        return _lowpass(target, previous, self.lowpass_alpha)
+
+    def _smooth_absolute_eef(
+        self,
+        target: np.ndarray,
+        current_obs: dict[str, np.ndarray],
+        side: str,
+        previous: np.ndarray | None,
+    ) -> np.ndarray:
+        target = np.asarray(target, dtype=np.float32).copy()
+        target[6] = _clip_gripper(target[6])
+        current = np.asarray(current_obs[f"{side}_eef_pos"], dtype=np.float32)
+        linear_delta = _clip_vector_delta(target[:3] - current[:3], self.max_eef_linear_delta_m)
+        angular_delta = _clip_vector_delta(target[3:6] - current[3:6], self.max_eef_angular_delta_rad)
+        target[:3] = current[:3] + linear_delta
+        target[3:6] = current[3:6] + angular_delta
+        if self.max_gripper_delta > 0:
+            gripper_delta = float(np.clip(target[6] - current[6], -self.max_gripper_delta, self.max_gripper_delta))
+            target[6] = _clip_gripper(current[6] + gripper_delta)
+        return _lowpass(target, previous, self.lowpass_alpha)
+
+    def _smooth_delta_eef(self, delta: np.ndarray, previous: np.ndarray | None) -> np.ndarray:
+        delta = np.asarray(delta, dtype=np.float32).copy()
+        delta[:3] = _clip_vector_delta(delta[:3], self.max_delta_eef_linear_m)
+        delta[3:6] = _clip_vector_delta(delta[3:6], self.max_delta_eef_angular_rad)
+        if self.max_gripper_delta > 0:
+            delta[6] = float(np.clip(delta[6], -self.max_gripper_delta, self.max_gripper_delta))
+        return _lowpass(delta, previous, self.lowpass_alpha)
 
 
 class PolicyRunner:
@@ -93,6 +192,8 @@ class PolicyRunner:
         hz: float = 20.0,
         guard_motion_mode: bool = True,
         limiter: ActionLimiter | None = None,
+        smoother: BimanualActionSmoother | None = None,
+        smooth_actions: bool = True,
         execute: bool = True,
         print_every: int = 0,
     ):
@@ -101,7 +202,18 @@ class PolicyRunner:
         self.action_mode = action_mode
         self.hz = hz
         self.guard_motion_mode = guard_motion_mode
-        self.limiter = limiter or ActionLimiter()
+        if smoother is not None:
+            self.smoother = smoother
+        elif limiter is not None:
+            self.smoother = BimanualActionSmoother(
+                action_mode=action_mode,
+                max_joint_delta_rad=limiter.max_joint_delta_rad,
+                lowpass_alpha=limiter.lowpass_alpha,
+            )
+        elif smooth_actions:
+            self.smoother = BimanualActionSmoother(action_mode=action_mode)
+        else:
+            self.smoother = None
         self.execute = execute
         self.print_every = print_every
 
@@ -119,8 +231,8 @@ class PolicyRunner:
                 images = default_images(obs)
                 raw_action = predict_with_policy(self.policy, images, state)
                 action = split_bimanual_action(raw_action)
-                if self.action_mode == "absolute_joint":
-                    action = self.limiter.filter(action, obs, previous_action)
+                if self.smoother is not None:
+                    action = self.smoother.filter(action, obs, previous_action)
                 if self.execute:
                     obs = self.env.step(action, action_mode=self.action_mode, return_observation=True)
                 else:

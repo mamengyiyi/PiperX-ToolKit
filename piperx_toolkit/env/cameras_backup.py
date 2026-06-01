@@ -6,7 +6,7 @@ from typing import Literal
 
 import numpy as np
 
-CameraBackend = Literal["mock", "opencv", "realsense"]
+CameraBackend = Literal["mock", "opencv"]
 
 
 @dataclass
@@ -86,71 +86,6 @@ class OpenCVCamera(BaseCamera):
             self.cap = None
 
 
-class RealSenseCamera(BaseCamera):
-    """RealSense backend: binds by serial number, avoids /dev/video* index drift."""
-
-    def __init__(self, config: CameraConfig):
-        self.config = config
-        self.pipeline = None
-        self.serial = str(config.device)
-        if not self.serial or self.serial == "0":
-            raise ValueError(
-                f"RealSense camera '{config.name}' requires a serial number in the "
-                f"'device' field (got {config.device!r})."
-            )
-
-    def connect(self) -> None:
-        try:
-            import pyrealsense2 as rs
-        except ImportError as exc:
-            raise RuntimeError("pyrealsense2 is required for RealSense backend") from exc
-
-        self.pipeline = rs.pipeline()
-        cfg = rs.config()
-        cfg.enable_device(self.serial)
-        cfg.enable_stream(
-            rs.stream.color,
-            self.config.width,
-            self.config.height,
-            rs.format.bgr8,
-            self.config.fps,
-        )
-        try:
-            self.pipeline.start(cfg)
-        except RuntimeError as exc:
-            self.pipeline = None
-            raise RuntimeError(
-                f"Could not start RealSense camera {self.config.name} "
-                f"(serial={self.serial}). Is it already in use by another process "
-                f"(realsense-viewer, ROS, or another pipeline)? Error: {exc}"
-            ) from exc
-
-    def read(self) -> np.ndarray:
-        if self.pipeline is None:
-            raise RuntimeError(f"RealSense camera {self.config.name} is not connected")
-        import cv2
-        import pyrealsense2 as rs
-
-        frames = self.pipeline.wait_for_frames(timeout_ms=5000)
-        color_frame = frames.get_color_frame()
-        if not color_frame:
-            raise RuntimeError(f"RealSense camera {self.config.name} returned no color frame")
-        img = np.asanyarray(color_frame.get_data())
-        # RealSense bgr8 -> RGB
-        img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-        if img_rgb.shape[1] != self.config.width or img_rgb.shape[0] != self.config.height:
-            img_rgb = cv2.resize(img_rgb, (self.config.width, self.config.height), interpolation=cv2.INTER_AREA)
-        return img_rgb
-
-    def close(self) -> None:
-        if self.pipeline is not None:
-            try:
-                self.pipeline.stop()
-            except Exception:
-                pass
-            self.pipeline = None
-
-
 class CameraManager:
     def __init__(self, configs: dict[str, CameraConfig]):
         self.configs = configs
@@ -163,8 +98,6 @@ class CameraManager:
                 camera = MockCamera(cfg)
             elif cfg.backend == "opencv":
                 camera = OpenCVCamera(cfg)
-            elif cfg.backend == "realsense":
-                camera = RealSenseCamera(cfg)
             else:
                 raise ValueError(f"Unsupported camera backend for {name}: {cfg.backend}")
             camera.connect()
@@ -185,3 +118,4 @@ def default_camera_configs(backend: CameraBackend = "mock") -> dict[str, CameraC
         "left_wrist": CameraConfig(name="left_wrist", backend=backend, device=1),
         "right_wrist": CameraConfig(name="right_wrist", backend=backend, device=2),
     }
+

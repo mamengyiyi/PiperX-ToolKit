@@ -45,10 +45,15 @@ def _aloha_images(images: dict[str, np.ndarray], resize: int = 224) -> dict[str,
 
 def _piperx_observation_images(images: dict[str, np.ndarray], resize: int = 224) -> dict[str, np.ndarray]:
     out: dict[str, np.ndarray] = {}
-    for name in ("front", "left_wrist", "right_wrist"):
-        out[f"observation.images.{name}"] = (
-            _as_hwc_uint8(images[name], resize=resize) if name in images else _black_hwc(resize)
-        )
+    aliases = {
+        "front": ("observation.images.front", "observation/image"),
+        "left_wrist": ("observation.images.left_wrist", "observation/left_wrist_image"),
+        "right_wrist": ("observation.images.right_wrist", "observation/right_wrist_image"),
+    }
+    for name, keys in aliases.items():
+        img = _as_hwc_uint8(images[name], resize=resize) if name in images else _black_hwc(resize)
+        for key in keys:
+            out[key] = img
     return out
 
 
@@ -64,6 +69,7 @@ class OpenPIRemotePolicy:
         observation_format: OpenPIObservationFormat = "aloha",
         resize: int = 224,
         action_dim: int | None = None,
+        chunk_size: int | None = None,
     ):
         from openpi_client import websocket_client_policy
 
@@ -73,6 +79,9 @@ class OpenPIRemotePolicy:
         self.observation_format = observation_format
         self.resize = resize
         self.action_dim = action_dim
+        if chunk_size is not None and chunk_size < 1:
+            raise ValueError(f"chunk_size must be >= 1, got {chunk_size}")
+        self.chunk_size = chunk_size
         self.client = websocket_client_policy.WebsocketClientPolicy(host=host, port=port, api_key=api_key)
         self.action_queue: deque[np.ndarray] = deque()
 
@@ -97,6 +106,7 @@ class OpenPIRemotePolicy:
         if self.observation_format == "piperx":
             obs: dict[str, Any] = {
                 "observation.state": state,
+                "observation/state": state,
                 "prompt": self.prompt,
             }
             obs.update(_piperx_observation_images(images, resize=self.resize))
@@ -122,10 +132,16 @@ class OpenPIRemotePolicy:
             arr = arr[:, : self.action_dim]
         return [row.astype(np.float32).copy() for row in arr]
 
+    def _enqueue_actions(self, actions: list[np.ndarray]) -> np.ndarray:
+        if not actions:
+            raise ValueError("OpenPI server returned no actions")
+        if self.chunk_size is not None:
+            actions = actions[: self.chunk_size]
+        self.action_queue.extend(actions[1:])
+        return actions[0]
+
     def predict(self, images: dict[str, np.ndarray], state: np.ndarray) -> np.ndarray:
         if self.action_queue:
             return self.action_queue.popleft()
         response = self.client.infer(self.make_observation(images, state))
-        actions = self._split_actions(response)
-        self.action_queue.extend(actions[1:])
-        return actions[0]
+        return self._enqueue_actions(self._split_actions(response))

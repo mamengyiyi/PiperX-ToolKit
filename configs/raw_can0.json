@@ -1,0 +1,204 @@
+{
+  "can": "can0",
+  "isOk": {
+    "repr": "True",
+    "plain": true
+  },
+  "GetArmStatus": {
+    "repr": "<piper_sdk.interface.piper_interface_v2.C_PiperInterface_V2.ArmStatus object at 0x7bc76b8cdd50>",
+    "plain": {
+      "time_stamp": 1779720022.5685685,
+      "Hz": 200.0,
+      "arm_status": {
+        "trajectory_num": 0,
+        "err_status": {
+          "joint_1_angle_limit": false,
+          "joint_2_angle_limit": false,
+          "joint_3_angle_limit": false,
+          "joint_4_angle_limit": false,
+          "joint_5_angle_limit": false,
+          "joint_6_angle_limit": false,
+          "communication_status_joint_1": false,
+          "communication_status_joint_2": false,
+          "communication_status_joint_3": false,
+          "communication_status_joint_4": false,
+          "communication_status_joint_5": false,
+          "communication_status_joint_6": false
+        }
+      }
+    }
+  },
+  "GetArmJointMsgs": {
+    "repr": "<piper_sdk.interface.piper_interface_v2.C_PiperInterface_V2.ArmJoint object at 0x7bc76b8cdf90>",
+    "plain": {
+      "time_stamp": 1779720022.56923,
+      "Hz": 200.0,
+      "joint_state": {
+        "joint_1": -1701,
+        "joint_2": -294,
+        "joint_3": 873,
+        "joint_4": 3322,
+        "joint_5": -2629,
+        "joint_6": -1893
+      }
+    }
+  },
+  "GetArmGripperMsgs": {
+    "repr": "<piper_sdk.interface.piper_interface_v2.C_PiperInterface_V2.ArmGripper object at 0x7bc76b8ce020>",
+    "plain": {
+      "time_stamp": 1779720022.5693257,
+      "Hz": 200.0,
+      "gripper_state": {
+        "grippers_angle": 18270,
+        "grippers_effort": 0,
+        "foc_status": {
+          "voltage_too_low": false,
+          "motor_overheating": false,
+          "driver_overcurrent": false,
+          "driver_overheating": false,
+          "sensor_status": false,
+          "driver_error_status": false,
+          "driver_enable_status": false,
+          "homing_status": false
+        }
+      }
+    }
+  },
+  "GetArmEndPoseMsgs": {
+    "repr": "<piper_sdk.interface.piper_interface_v2.C_PiperInterface_V2.ArmEndPose object at 0x7bc76b8cdf00>",
+    "plain": {
+      "time_stamp": 1779720022.5689752,
+      "Hz": 200.0,
+      "end_pose": {
+        "X_axis": 97515,
+        "Y_axis": -1279,
+        "Z_axis": 205171,
+        "RX_axis": -88911,
+        "RY_axis": -1943,
+        "RZ_axis": -89108
+      }
+    }
+  },
+  "GetArmJointCtrl": {
+    "repr": "<piper_sdk.interface.piper_interface_v2.C_PiperInterface_V2.ArmJointCtrl object at 0x7bc76b8ce860>",
+    "plain": {
+      "time_stamp": 0,
+      "Hz": 0,
+      "joint_ctrl": {
+        "joint_1": 0,
+        "joint_2": 0,
+        "joint_3": 0,
+        "joint_4": 0,
+        "joint_5": 0,
+        "joint_6": 0
+      }
+    }
+  },
+  "GetArmGripperCtrl": {
+    "repr": "<piper_sdk.interface.piper_interface_v2.C_PiperInterface_V2.ArmGripperCtrl object at 0x7bc76b8ce8f0>",
+    "plain": {
+      "time_stamp": 0,
+      "Hz": 0.0,
+      "gripper_ctrl": {
+        "grippers_angle": 0,
+        "grippers_effort": 0,
+        "status_code": 0,
+        "set_zero": 0
+      }
+    }
+  },
+  "GetPiperFirmwareVersion": {
+    "repr": "'S-V1.8-8'",
+    "plain": "S-V1.8-8"
+  },
+  "GetAllMotorAngleLimitMaxSpd": {
+    "repr": "<piper_sdk.interface.piper_interface_v2.C_PiperInterface_V2.AllCurrentMotorAngleLimitMaxSpd object at 0x7bc76b8cec20>",
+    "plain": {
+      "time_stamp": 1779720020.5706534,
+      "all_motor_angle_limit_max_spd": {
+        "motor": [
+          {
+            "motor_num": 0,
+            "max_angle_limit": 0,
+            "min_angle_limit": 0,
+            "max_joint_spd": 0
+          },
+          {
+            "motor_num": 1,
+            "max_angle_limit": 1500,
+            "min_angle_limit": -1500,
+            "max_joint_spd": 300
+          },
+          {
+            "motor_num": 2,
+            "max_angle_limit": 1800,
+            "min_angle_limit": 0,
+            "max_joint_spd": 300
+          },
+          {
+            "motor_num": 3,
+            "max_angle_limit": 0,
+            "min_angle_limit": -1700,
+            "max_joint_spd": 300
+          },
+          {
+            "motor_num": 4,
+            "max_angle_limit": 890,
+            "min_angle_limit": -890,
+            "max_joint_spd": 300
+          },
+          {
+            "motor_num": 5,
+            "max_angle_limit": 890,
+            "min_angle_limit": -890,
+            "max_joint_spd": 300
+          },
+          {
+            "motor_num": 6,
+            "max_angle_limit": 1800,
+            "min_angle_limit": -1800,
+            "max_joint_spd": 300
+          }
+        ]
+      }
+    }
+  },
+  "GetAllMotorMaxAccLimit": {
+    "repr": "<piper_sdk.interface.piper_interface_v2.C_PiperInterface_V2.AllCurrentMotorMaxAccLimit object at 0x7bc76b8cead0>",
+    "plain": {
+      "time_stamp": 1779720020.5713854,
+      "all_motor_max_acc_limit": {
+        "motor": [
+          {
+            "joint_motor_num": 0,
+            "max_joint_acc": 0
+          },
+          {
+            "joint_motor_num": 1,
+            "max_joint_acc": 500
+          },
+          {
+            "joint_motor_num": 2,
+            "max_joint_acc": 500
+          },
+          {
+            "joint_motor_num": 3,
+            "max_joint_acc": 500
+          },
+          {
+            "joint_motor_num": 4,
+            "max_joint_acc": 500
+          },
+          {
+            "joint_motor_num": 5,
+            "max_joint_acc": 500
+          },
+          {
+            "joint_motor_num": 6,
+            "max_joint_acc": 500
+          }
+        ]
+      }
+    }
+  }
+}

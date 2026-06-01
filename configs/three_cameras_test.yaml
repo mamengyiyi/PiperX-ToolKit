@@ -1,8 +1,8 @@
 backend: sdk
-camera_backend: realsense
+camera_backend: opencv
 arms:
-  left_can: can1
-  right_can: can0
+  left_can: can0
+  right_can: can1
 enable_on_connect: false
 speed_ratio: 100
 high_follow: true
@@ -10,20 +10,20 @@ gripper_open_raw: 70000
 gripper_closed_raw: 0
 cameras:
   front:
-    backend: realsense
-    device: 347622070427
+    backend: opencv
+    device: 10
     width: 640
     height: 480
     fps: 30
   left_wrist:
-    backend: realsense
-    device: 260322278131
+    backend: opencv
+    device: 14
     width: 640
     height: 480
     fps: 30
   right_wrist:
-    backend: realsense
-    device: 335122272832
+    backend: opencv
+    device: 2
     width: 640
     height: 480
     fps: 30
