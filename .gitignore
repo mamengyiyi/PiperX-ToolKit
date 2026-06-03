@@ -6,4 +6,4 @@ datasets/
 lerobot_datasets/
 *.zarr/
 sdk_msgs.json
-
+train_checkpoint

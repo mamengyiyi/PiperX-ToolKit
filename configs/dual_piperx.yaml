@@ -1,8 +1,8 @@
 backend: sdk
 camera_backend: realsense
 arms:
-  left_can: can1
-  right_can: can0
+  left_can: can0
+  right_can: can2
 enable_on_connect: false
 speed_ratio: 100
 high_follow: true

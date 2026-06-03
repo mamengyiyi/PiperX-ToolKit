@@ -88,7 +88,7 @@ mkdir -p /home/ruihao/PiperX-ToolKit/train_checkpoint/towel_bimanual_001_29999/a
 
 ln -sfn \
   /home/ruihao/PiperX-ToolKit/train_checkpoint/towel_bimanual_001_29999/assets/mamengyiyi/piperx_towel_bimanual/norm_stats.json \
-  /home/ruihao/PiperX-ToolKit/train_checkpoint/towel_bimanual_001_29999/assets/ruio248/fold_towel_20260527_merged_v21/norm_stats.json
+  /home/ruihao/PiperX-ToolKit/train_checkpoint/towel_bimanual_001_29999/assets/ruio248/swing_fold_towel_20260527_merged_v21/norm_stats.json
 ```
 
 ---
@@ -265,7 +265,7 @@ env -u http_proxy -u https_proxy -u all_proxy -u no_proxy \
   --default-prompt "fold the towel" \
   policy:checkpoint \
   --policy.config=pi05_piperx_bimanual_fold_towel_20260527 \
-  --policy.dir=/home/ruihao/PiperX-ToolKit/train_checkpoint/fold_towel_parts123_horizon100_8gpu_bs64_150k_001
+  --policy.dir=/home/ruihao/PiperX-ToolKit/train_checkpoint/fold_towel_parts123_horizon100_8gpu_bs64_150k_001/15000
 ```
 
 终端 B（deploy）：
