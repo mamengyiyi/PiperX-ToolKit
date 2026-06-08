@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import deque
+import os
 from typing import Any, Literal
 
 import numpy as np
@@ -24,6 +25,15 @@ def _as_hwc_uint8(image: np.ndarray, resize: int = 224) -> np.ndarray:
 
 def _black_hwc(resize: int = 224) -> np.ndarray:
     return np.zeros((resize, resize, 3), dtype=np.uint8)
+
+
+def _env_int(*names: str) -> int | None:
+    for name in names:
+        raw = os.environ.get(name)
+        if raw is None or raw.strip() == "":
+            continue
+        return int(raw)
+    return None
 
 
 def _aloha_images(images: dict[str, np.ndarray], resize: int = 224) -> dict[str, np.ndarray]:
@@ -70,6 +80,7 @@ class OpenPIRemotePolicy:
         resize: int = 224,
         action_dim: int | None = None,
         chunk_size: int | None = None,
+        exec_chunk_size: int | None = None,
     ):
         from openpi_client import websocket_client_policy
 
@@ -81,9 +92,15 @@ class OpenPIRemotePolicy:
         self.action_dim = action_dim
         if chunk_size is not None and chunk_size < 1:
             raise ValueError(f"chunk_size must be >= 1, got {chunk_size}")
+        if exec_chunk_size is None:
+            exec_chunk_size = _env_int("PIPERX_OPENPI_EXEC_CHUNK_SIZE", "PIPERX_EXEC_CHUNK_SIZE")
+        if exec_chunk_size is not None and exec_chunk_size < 1:
+            raise ValueError(f"exec_chunk_size must be >= 1, got {exec_chunk_size}")
         self.chunk_size = chunk_size
+        self.exec_chunk_size = exec_chunk_size
         self.client = websocket_client_policy.WebsocketClientPolicy(host=host, port=port, api_key=api_key)
         self.action_queue: deque[np.ndarray] = deque()
+        self.last_predict_source = "policy"
 
     def get_server_metadata(self) -> dict[str, Any]:
         if hasattr(self.client, "get_server_metadata"):
@@ -137,11 +154,17 @@ class OpenPIRemotePolicy:
             raise ValueError("OpenPI server returned no actions")
         if self.chunk_size is not None:
             actions = actions[: self.chunk_size]
+        if self.exec_chunk_size is not None:
+            actions = actions[: self.exec_chunk_size]
+        if not actions:
+            raise ValueError("No actions left after chunk truncation")
         self.action_queue.extend(actions[1:])
         return actions[0]
 
     def predict(self, images: dict[str, np.ndarray], state: np.ndarray) -> np.ndarray:
         if self.action_queue:
+            self.last_predict_source = "queue"
             return self.action_queue.popleft()
         response = self.client.infer(self.make_observation(images, state))
+        self.last_predict_source = "policy"
         return self._enqueue_actions(self._split_actions(response))
