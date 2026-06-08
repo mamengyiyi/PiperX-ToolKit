@@ -313,6 +313,7 @@ def open_or_create_dataset(path: str, args: argparse.Namespace) -> tuple[Any, An
             "policy_port": args.port,
             "policy_observation_format": args.observation_format,
             "policy_chunk_size": args.chunk_size,
+            "policy_exec_chunk_size": args.exec_chunk_size,
             "action_from": "executed_action_left/right; expert labels are expert_action_* where intervention_mask=1",
             "left_joint_signs": args.left_joint_signs,
             "left_joint_offsets": args.left_joint_offsets,
@@ -409,10 +410,12 @@ def instantiate_policy(args: argparse.Namespace) -> OpenPIRemotePolicy:
         resize=args.image_resize,
         action_dim=args.action_dim,
         chunk_size=args.chunk_size,
+        exec_chunk_size=args.exec_chunk_size,
     )
     try:
         return OpenPIRemotePolicy(**kwargs)
     except TypeError:
+        kwargs.pop("exec_chunk_size", None)
         kwargs.pop("chunk_size")
         return OpenPIRemotePolicy(**kwargs)
 
@@ -757,6 +760,12 @@ def build_parser() -> argparse.ArgumentParser:
     openpi.add_argument("--image-resize", type=int, default=224)
     openpi.add_argument("--action-dim", type=int, default=14)
     openpi.add_argument("--chunk-size", type=int, default=60)
+    openpi.add_argument(
+        "--exec-chunk-size",
+        type=int,
+        default=None,
+        help="Only execute/cache this many actions from each policy inference. Defaults to --chunk-size.",
+    )
     openpi.add_argument("--predict-during-intervention", action="store_true")
     openpi.add_argument("--clear-policy-queue-on-intervention", action=argparse.BooleanOptionalAction, default=True)
 
@@ -823,7 +832,8 @@ def main() -> None:
 
     print(
         f"OpenPI intervention collection: host={args.host}:{args.port} hz={args.hz} "
-        f"chunk_size={args.chunk_size} mirror_leaders={args.mirror_leaders}"
+        f"chunk_size={args.chunk_size} exec_chunk_size={args.exec_chunk_size or args.chunk_size} "
+        f"mirror_leaders={args.mirror_leaders}"
     )
     print("DRY-RUN: no arm commands will be sent." if not args.execute else "EXECUTE: robot commands will be sent.")
 
