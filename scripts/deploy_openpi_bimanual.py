@@ -61,6 +61,12 @@ def build_parser() -> argparse.ArgumentParser:
         "Must be <= training action_horizon (current model: 100). "
         "Set to 1 to replan every control step.",
     )
+    openpi.add_argument(
+        "--exec-chunk-size",
+        type=int,
+        default=None,
+        help="Only execute/cache this many actions from each policy inference. Defaults to --chunk-size.",
+    )
 
     control = parser.add_argument_group("control loop")
     control.add_argument(
@@ -281,6 +287,7 @@ def main() -> None:
         resize=args.image_resize,
         action_dim=args.action_dim,
         chunk_size=args.chunk_size,
+        exec_chunk_size=args.exec_chunk_size,
     )
     metadata = policy.get_server_metadata()
     if metadata:
@@ -291,7 +298,8 @@ def main() -> None:
     smoother = build_smoother(args)
 
     print(
-        f"action_mode={args.action_mode} chunk_size={args.chunk_size} hz={args.hz} "
+        f"action_mode={args.action_mode} chunk_size={args.chunk_size} "
+        f"exec_chunk_size={args.exec_chunk_size or args.chunk_size} hz={args.hz} "
         f"host={args.host}:{args.port} smooth={'off' if smoother is None else 'on'}"
     )
     print("DRY-RUN: actions will not be sent." if not args.execute else "EXECUTE: actions will be sent to the robot.")
