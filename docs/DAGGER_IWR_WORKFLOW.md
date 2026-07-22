@@ -1,223 +1,302 @@
 # PiperX DAgger / IWR Workflow
 
-This document records the current PiperX DAgger data pipeline and the training path used for weighted behavior cloning / simplified IWR.
+This document describes a reusable PiperX DAgger data pipeline for converting
+OpenPI human-intervention rollouts into LeRobot datasets, cleaning them, and
+training a weighted behavior cloning policy.
+
+The workflow is intentionally written with placeholders instead of machine names,
+private paths, or experiment-specific hyperparameters.
 
 ## 1. Pipeline Overview
 
 ```text
-OpenPI intervention zarr
-  -> PiperX-ToolKit: convert OpenPI intervention zarr to LeRobot v3 full/intervention views
-  -> openpi-piperx: merge four LeRobot v3 parts into LeRobot v2.1 full/intervention datasets
-  -> openpi-piperx: physically clean invalid/stall frames and write piperx.sample_weight
-  -> openpi-piperx: compute fast state/action norm stats from parquet
-  -> openpi-piperx: run policy-train --no-acp with piperx.sample_weight
+OpenPI intervention Zarr
+  -> convert to two LeRobot v3 views: full and intervention
+  -> merge multiple LeRobot v3 parts into LeRobot v2.1
+  -> physically clean invalid or stalled frames
+  -> assign IWR-style sample weights
+  -> compute normalization statistics from state/action parquet data
+  -> train a policy with weighted supervised behavior cloning
 ```
 
-The current training is not AWR and does not use advantage weighting. It uses supervised BC loss weighted by `piperx.sample_weight`:
+The training objective is weighted behavior cloning, not advantage-weighted RL:
 
 ```text
-loss = sum_i w_i * BC(policy(obs_i), executed_action_i) / sum_i w_i
+loss = sum_i weight_i * BC(policy(observation_i), action_i) / sum_i weight_i
 ```
 
-## 2. Convert Zarr To LeRobot V3 On JG
+The intended weight field is:
 
-Run from:
-
-```bash
-cd /home/ruihao/PiperX-ToolKit
-source .venv/bin/activate
+```text
+piperx.sample_weight
 ```
 
-Main conversion script:
+## 2. Data Semantics
+
+The converter keeps the standard policy inputs unchanged:
+
+```text
+observation.state              float32[14]
+action                         float32[14]
+observation.images.front       video
+observation.images.left_wrist  video
+observation.images.right_wrist video
+```
+
+`observation.state` is not an image. It is the concatenation of:
+
+```text
+left_joint_pos[7] + right_joint_pos[7]
+```
+
+`action` is always the executed action:
+
+```text
+executed_action_left[7] + executed_action_right[7]
+```
+
+Additional PiperX fields are preserved for DAgger/IWR analysis:
+
+```text
+piperx.policy_action
+piperx.human_action
+piperx.executed_action
+piperx.control_source
+piperx.intervention_mask
+piperx.episode_success
+piperx.policy_action_valid
+piperx.human_action_valid
+piperx.original_episode_index
+piperx.original_frame_index
+piperx.intervention_segment_index
+piperx.source_id
+piperx.towel_type_id
+```
+
+The full view contains complete rollout episodes. The intervention view contains
+only continuous human-intervention segments, with each segment stored as a
+separate episode.
+
+Do not train by simply concatenating full and intervention views. Intervention
+frames already exist inside the full view, so concatenating them directly would
+duplicate those frames. Use the intervention view for inspection, filtering, or
+weight construction.
+
+## 3. Convert OpenPI Intervention Zarr To LeRobot V3
+
+Script:
 
 ```text
 scripts/convert_openpi_intervention_to_lerobot_v3_fast.py
 ```
 
-Example for the square towel batch:
+Example:
 
 ```bash
 python scripts/convert_openpi_intervention_to_lerobot_v3_fast.py \
-  --zarr /towel_data/PiperX-ToolKit/datasets/dagger_multi_towel_openpi_intervention_20260719_v1.zarr \
-  --output /towel_data/PiperX-ToolKit/lerobot_datasets/ruio248/dagger_multi_towel_iwr_v3_20260722/dagger_square_20260719_v1_full_v3 \
-  --repo-id ruio248/dagger_multi_towel_iwr_v3_20260722/dagger_square_20260719_v1_full_v3 \
-  --towel-type square \
-  --source-id 0 \
-  --task "swing fold the towel" \
-  --fps 30 \
-  --image-writer-threads 8 \
+  --zarr <RAW_INTERVENTION_ZARR> \
+  --output <LEROBOT_V3_FULL_OUTPUT> \
+  --repo-id <LEROBOT_V3_FULL_REPO_ID> \
+  --towel-type <square|small_rectangle|large_rectangle> \
+  --source-id <SOURCE_ID> \
+  --task "<TASK_DESCRIPTION>" \
+  --fps <FPS> \
+  --image-writer-threads <N> \
   --overwrite
 ```
 
-The script writes two datasets:
+The command writes two outputs:
 
 ```text
-full view:         ${output}
-intervention view: ${output}_intervention
+full view:         <LEROBOT_V3_FULL_OUTPUT>
+intervention view: <LEROBOT_V3_FULL_OUTPUT>_intervention
 ```
 
-Four source batches used in the current run:
-
-| source_id | towel_type | zarr |
-|---:|---|---|
-| 0 | `square` | `/towel_data/PiperX-ToolKit/datasets/dagger_multi_towel_openpi_intervention_20260719_v1.zarr` |
-| 1 | `small_rectangle` | `/home/ruihao/PiperX-ToolKit/datasets/dagger_multi_towel_openpi_intervention_20260720_v2.zarr` |
-| 2 | `large_rectangle` | `/home/ruihao/PiperX-ToolKit/datasets/dagger_multi_towel_openpi_intervention_20260720_v3.zarr` |
-| 3 | `large_rectangle` | `/towel_data/PiperX-ToolKit/datasets/dagger_multi_towel_openpi_intervention_20260721_v2.zarr` |
-
-## 3. Merge And Clean On The Training Server
-
-Run from:
+For smoke tests or unit tests, use:
 
 ```bash
-ssh new_server_my_2
-cd /root/data/my/piperx/openpi
-export HF_LEROBOT_HOME=/root/data/my/piperx/lerobot_datasets
+python scripts/convert_openpi_intervention_to_lerobot_v3_fast.py \
+  --zarr <RAW_INTERVENTION_ZARR> \
+  --output <TEST_LEROBOT_V3_FULL_OUTPUT> \
+  --repo-id <TEST_REPO_ID> \
+  --towel-type <square|small_rectangle|large_rectangle> \
+  --source-id <SOURCE_ID> \
+  --episodes 2 \
+  --no-videos \
+  --overwrite
 ```
 
-Merge four v3 full/intervention parts into v2.1:
+Use a unique `source_id` for each independently collected data batch. Use
+`towel_type` or a similar categorical label to preserve task/domain metadata.
+
+## 4. Merge LeRobot V3 Parts
+
+Script:
 
 ```text
 scripts/merge_dagger_lerobot_v3_parts_to_v21.py
 ```
 
-Current recommended physical cleaning and IWR sample-weight generation:
+The merge step combines multiple converted parts into one LeRobot v2.1 full
+dataset and one LeRobot v2.1 intervention dataset. Keep full and intervention
+views separate.
+
+Use the script help for the exact argument names in your checkout:
+
+```bash
+python scripts/merge_dagger_lerobot_v3_parts_to_v21.py --help
+```
+
+A typical merge should provide:
+
+```text
+input full v3 repo paths
+input intervention v3 repo paths
+output full v2.1 repo id/path
+output intervention v2.1 repo id/path
+```
+
+After merging, verify that all `piperx.*` metadata fields are still present.
+
+## 5. Physically Clean And Assign IWR Weights
+
+Recommended script:
 
 ```text
 scripts/prepare_dagger_iwr_dataset_physical.py
 ```
 
-`scripts/prepare_dagger_iwr_dataset.py` is the older annotation route that keeps complete episodes and marks trainable frames with `piperx.train_mask`. The current training uses the physical route because it removes rejected frames directly and avoids changing the training loader.
+This route physically removes rejected frames or segments and writes
+`piperx.sample_weight` for training. It avoids requiring the training dataloader
+to understand a separate `piperx.train_mask` field.
 
-Current full v2.1 output:
-
-```text
-ruio248/dagger_multi_towel_openpi_intervention_20260719_20260721_full_v21
-```
-
-Current intervention v2.1 output:
+The older script:
 
 ```text
-ruio248/dagger_multi_towel_openpi_intervention_20260719_20260721_intervention_v21
+scripts/prepare_dagger_iwr_dataset.py
 ```
 
-Current cleaned training dataset:
+keeps complete episodes and marks trainable samples with `piperx.train_mask`.
+Use it only if the downstream training code is designed to consume that mask.
+
+Use the script help for the exact argument names in your checkout:
+
+```bash
+python scripts/prepare_dagger_iwr_dataset_physical.py --help
+```
+
+The cleaning policy should be chosen explicitly for the project. Common checks
+include:
 
 ```text
-ruio248/dagger_multi_towel_openpi_intervention_20260719_20260721_physically_cleaned_iwr_s60
+remove invalid numeric values
+trim long stalls
+remove or trim unusable camera/state tails
+preserve episode success labels
+preserve original episode/frame indices
+write piperx.sample_weight
 ```
 
-Current cleaned intervention reference:
+The cleaned full dataset is the primary training dataset. The cleaned
+intervention dataset is useful for auditing human corrections and weight logic.
 
-```text
-ruio248/dagger_multi_towel_openpi_intervention_20260719_20260721_physically_cleaned_iwr_s60_intervention
-```
+## 6. Build An Inspection Package
 
-Important: train only on the cleaned full dataset. Do not append the `_intervention` dataset to training, because those human frames already exist in the full view.
-
-## 4. Inspection Package
-
-Use this script when manually checking original vs cleaned trajectories:
+Script:
 
 ```text
 scripts/build_dagger_iwr_inspection_package.py
 ```
 
-It extracts aligned snippets from:
+Use this script to export a small visual package for manual checking:
 
-```text
-original full
-cleaned full
-original intervention
-cleaned intervention
+```bash
+python scripts/build_dagger_iwr_inspection_package.py \
+  --original-full <ORIGINAL_FULL_V21> \
+  --cleaned-full <CLEANED_FULL_V21> \
+  --original-intervention <ORIGINAL_INTERVENTION_V21> \
+  --cleaned-intervention <CLEANED_INTERVENTION_V21> \
+  --output <INSPECTION_OUTPUT_DIR> \
+  --overwrite
 ```
 
-This is only for visual/manual validation and is not required for training.
+The package is for visual validation only. It is not part of the training input.
 
-## 5. Fast Norm Stats
+## 7. Compute Norm Stats
 
-Use:
+Script:
 
 ```text
 scripts/compute_piperx_norm_stats_from_lerobot_parquet.py
 ```
 
-Do not use the original `scripts/compute_norm_stats.py` for this DAgger dataset unless you intentionally want to decode videos. The fast script reads only parquet columns:
+This script reads only parquet numeric columns:
 
 ```text
 observation.state
 action
 ```
 
-It expands `action` with `action_horizon=60`, matching the OpenPI training loader's action chunking, without decoding RGB videos.
+It avoids decoding videos and is therefore preferred for large PiperX datasets
+when image statistics are not needed.
 
-Current norm stats path:
-
-```text
-/root/data/my/piperx/openpi/assets/pi05_piperx_bimanual_swing_fold_towel_20260531/ruio248/dagger_multi_towel_openpi_intervention_20260719_20260721_physically_cleaned_iwr_s60/norm_stats.json
-```
-
-## 6. Training
-
-The current training uses `train_with_rl.py`:
-
-```text
-stage: policy-train
-ACP: disabled via --no-acp
-sample weight field: piperx.sample_weight
-```
-
-Current four-GPU setting:
-
-```text
-CUDA_VISIBLE_DEVICES=4,5,6,7
-BATCH_SIZE=128
-NUM_TRAIN_STEPS=20000
-FSDP_DEVICES=4
-SAVE_INTERVAL=5000
-KEEP_PERIOD=5000
-```
-
-This matches the previous 8-GPU baseline training amount:
-
-```text
-8 GPU baseline: batch 256 * 10000 steps = 2,560,000 samples
-4 GPU IWR:      batch 128 * 20000 steps = 2,560,000 samples
-```
-
-Current checkpoint output:
-
-```text
-/root/data/my/piperx/openpi/checkpoints/pi05_piperx_bimanual_swing_fold_towel_20260531/dagger_multi_towel_iwr_weighted_bc_4gpu_bs128_steps20000_save5000_001
-```
-
-Monitor:
+Use the script help for the exact argument names in your checkout:
 
 ```bash
-tail -f /root/data/my/piperx/logs/dagger_multi_towel_iwr_weighted_bc_4gpu_bs128_steps20000_save5000_001_20260722_191144/train.log
+python scripts/compute_piperx_norm_stats_from_lerobot_parquet.py --help
 ```
 
-Expected healthy metrics:
+The resulting norm stats should be placed where the policy config or checkpoint
+loader expects dataset assets.
+
+## 8. Train With Weighted Behavior Cloning
+
+The training code should read:
 
 ```text
-actor_weight_mean around 1.3
-policy_loss finite and decreasing
-policy_grad_norm finite
-GPU 4-7 busy
+observation.state
+observation.images.*
+action
+piperx.sample_weight
 ```
 
-## 7. Deployment Asset Alias
+and apply `piperx.sample_weight` to the supervised behavior cloning loss.
 
-`serve_policy.py` may look for norm stats using the original config repo id:
+Choose batch size, number of steps, save interval, and device count according to
+the dataset size and available compute. Those values are experiment-specific and
+should live in the training launch script, not in this general workflow document.
+
+If the repository also supports RL, ACP, or advantage-estimation paths, disable
+or bypass them unless the experiment intentionally uses those objectives.
+
+## 9. Deployment Notes
+
+Before deployment, confirm that the checkpoint can find the norm stats associated
+with the training dataset. If the serving config expects a different dataset
+asset id, create a documented assets alias or update the config so that the
+loader resolves the correct `norm_stats.json`.
+
+Run a dry-run or short execution test before long deployments:
 
 ```text
-ruio248/swing_fold_towel_20260531_my_merged_v21_parts123456789_rebuilt
+check robot/CAN mapping
+check camera availability
+check policy server connectivity
+check observation/action dimensions
+check action limits and smoothing settings
 ```
 
-The trained DAgger repo id is:
+## 10. Minimal Validation Checklist
+
+Before using a converted dataset for training:
 
 ```text
-ruio248/dagger_multi_towel_openpi_intervention_20260719_20260721_physically_cleaned_iwr_s60
+full episode count matches source rollout count
+intervention segments are split only at control-source boundaries
+state/action dimensions are 14
+video frame counts align with parquet frame counts
+episode success labels are preserved
+original episode/frame indices are preserved
+piperx.sample_weight is finite and positive for trainable samples
+norm stats are computed from the intended cleaned training dataset
 ```
-
-Before deployment, make sure each deployable checkpoint has an assets alias from the expected old repo id to the DAgger norm stats directory.
