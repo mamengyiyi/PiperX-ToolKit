@@ -302,22 +302,187 @@ python scripts/compute_piperx_norm_stats_from_lerobot_parquet.py --help
 
 ## 10. 加权行为克隆训练
 
-训练代码需要读取：
+### 10.1 训练入口
 
-```text
-observation.state
-observation.images.*
-action
-piperx.sample_weight
+当前推荐入口分为两层：
+
+```bash
+# 一键流程脚本：数据检查、norm_stats、dry-run、正式训练
+scripts/run_dagger_iwr_4gpu_normstats_train20k.sh
+
+# 底层训练脚本：实际执行 policy-train
+scripts/train_with_rl.py
 ```
 
-并在 supervised BC loss 中应用 `piperx.sample_weight`。
+一键流程脚本主要做这些事情：
+
+```text
+检查 LeRobot 数据集是否存在
+检查 observation.state、action、piperx.sample_weight、piperx.control_source、piperx.executed_action 字段
+检查训练配置中 discrete_state_input=True
+检查 baseline checkpoint 是否存在
+按需计算 norm_stats
+为部署阶段建立 assets alias
+先执行 train_with_rl.py --dry-run
+正式启动 weighted BC / 简化 IWR 训练
+```
+
+### 10.2 当前训练命令结构
+
+底层训练命令的核心结构如下：
+
+```bash
+.venv/bin/python scripts/train_with_rl.py "$CONFIG" \
+  --repo-id "$DATA_REPO" \
+  --exp-name "$EXP_NAME" \
+  --stage policy-train \
+  --training-mode full \
+  --weight-loader-path "$BASELINE_PARAMS" \
+  --assets-base-dir "$ASSETS_BASE_DIR" \
+  --checkpoint-base-dir "$CHECKPOINT_BASE_DIR" \
+  --batch-size "$BATCH_SIZE" \
+  --num-train-steps "$NUM_TRAIN_STEPS" \
+  --num-workers "$TRAIN_NUM_WORKERS" \
+  --fsdp-devices "$FSDP_DEVICES" \
+  --save-interval "$SAVE_INTERVAL" \
+  --keep-period "$KEEP_PERIOD" \
+  --log-interval "$LOG_INTERVAL" \
+  --no-acp \
+  --policy-sample-weight-field piperx.sample_weight \
+  --overwrite \
+  --wandb-enabled
+```
+
+训练前建议先跑同一命令的 dry-run 版本：
+
+```bash
+.venv/bin/python scripts/train_with_rl.py "$CONFIG" \
+  --repo-id "$DATA_REPO" \
+  --exp-name "$EXP_NAME" \
+  --stage policy-train \
+  --training-mode full \
+  --weight-loader-path "$BASELINE_PARAMS" \
+  --assets-base-dir "$ASSETS_BASE_DIR" \
+  --checkpoint-base-dir "$CHECKPOINT_BASE_DIR" \
+  --batch-size "$BATCH_SIZE" \
+  --num-train-steps "$NUM_TRAIN_STEPS" \
+  --num-workers "$TRAIN_NUM_WORKERS" \
+  --fsdp-devices "$FSDP_DEVICES" \
+  --save-interval "$SAVE_INTERVAL" \
+  --keep-period "$KEEP_PERIOD" \
+  --log-interval "$LOG_INTERVAL" \
+  --no-acp \
+  --policy-sample-weight-field piperx.sample_weight \
+  --dry-run
+```
+
+### 10.3 当前实验默认参数
+
+一键脚本中的当前默认参数如下：
+
+| 参数 | 当前默认值 | 说明 |
+|---|---:|---|
+| `CONFIG` | `pi05_piperx_bimanual_swing_fold_towel_20260531` | OpenPI / PiperX 模型和数据配置 |
+| `DATA_REPO` | cleaned DAgger IWR LeRobot repo id | 清洗后、带 `piperx.sample_weight` 的训练集 |
+| `EXP_NAME` | `dagger_multi_towel_iwr_weighted_bc_4gpu_bs128_steps20000_save5000_001` | checkpoint 实验名 |
+| `BATCH_SIZE` | `128` | 全局 batch size |
+| `NUM_TRAIN_STEPS` | `20000` | 总训练步数 |
+| `FSDP_DEVICES` | `4` | FSDP 使用的 GPU 数 |
+| `TRAIN_NUM_WORKERS` | `8` | 训练 dataloader worker 数 |
+| `NORM_NUM_WORKERS` | `8` | norm_stats 计算 worker 数 |
+| `SAVE_INTERVAL` | `5000` | 每 5000 step 保存一次 checkpoint |
+| `KEEP_PERIOD` | `5000` | checkpoint 周期性保留间隔 |
+| `LOG_INTERVAL` | `10` | 日志打印间隔 |
+| `POLICY_SAMPLE_WEIGHT_FIELD` | `piperx.sample_weight` | supervised BC loss 使用的样本权重字段 |
+| `ACP` | disabled by `--no-acp` | 关闭 ACP 条件提示 / value / advantage 路径 |
+
+这组参数是当前实验设置，不是算法本身的硬性要求。四卡训练使用：
+
+```text
+batch 128 * 20000 steps = 2,560,000 samples
+```
+
+这是为了对齐之前八卡 baseline 的训练样本量：
+
+```text
+batch 256 * 10000 steps = 2,560,000 samples
+```
+
+### 10.4 `--no-acp` 为什么可以实现当前 IWR
+
+这里的 IWR 指 simplified Intervention Weighted Regression，也就是把人类接管样本作为更高权重的 supervised BC 样本；它不是 AWR，也不依赖 value function 或 advantage。
+
+关键逻辑是：
+
+```text
+prepare_dagger_iwr_dataset_physical.py
+  -> 根据 control_source / intervention_mask 写入 piperx.sample_weight
+
+train_with_rl.py 的 RLDataset
+  -> 从 parquet 读取 piperx.sample_weight
+  -> 放入 batch["rl"]["sample_weight"]
+
+train_with_rl.py --stage policy-train --policy-sample-weight-field piperx.sample_weight
+  -> 在 policy_train_step 里用该权重加权 supervised BC loss
+```
+
+对应的训练代码等价于：
+
+```python
+chunked_loss = model.compute_loss(rng, observation, actions, train=True)
+per_sample = mean(chunked_loss, axis=-1)
+weights = batch["rl"]["sample_weight"]
+loss = sum(per_sample * weights) / max(sum(weights), 1e-6)
+```
+
+因此优化目标可以写成：
+
+```text
+loss = sum_i w_i * BC(policy(observation_i), action_i) / sum_i w_i
+```
+
+其中：
+
+```text
+w_i = piperx.sample_weight_i
+action_i = executed_action_i
+```
+
+对 DAgger 数据来说，intervention 段的 `action` 是人类接管后实际执行到机械臂上的动作；policy 段的 `action` 是模型实际执行的动作。只要清洗脚本把 intervention 帧设置为更高 `piperx.sample_weight`，`policy-train` 的 supervised BC loss 就会更重视人类纠偏样本。
+
+`--no-acp` 的作用是关闭 ACP 条件提示、value learning 和 advantage conditioning。它不会关闭 `policy_train_step` 中的 `piperx.sample_weight` 加权分支。所以当前命令：
+
+```bash
+--stage policy-train \
+--no-acp \
+--policy-sample-weight-field piperx.sample_weight
+```
+
+表示：
+
+```text
+不走 ACP / advantage 路径
+只做 policy supervised BC
+但 BC loss 按 piperx.sample_weight 加权
+```
+
+这就是当前代码路径下的 DAgger / IWR weighted BC 实现。
+
+### 10.5 当前实现不是完整 AWR
 
 当前流程的核心不是重新实现一个完整 RL/AWR 算法，而是在标准 BC 训练中提高人类接管样本的监督权重。这样可以让模型更多学习失败恢复、纠偏和关键接触阶段的人类动作。
 
-如果训练仓库同时支持 RL、ACP、value learning 或 advantage estimation，需要确认当前实验是否真的使用这些目标。若目标只是 DAgger/IWR weighted BC，则应禁用或绕过这些额外路径，避免引入不必要的训练逻辑和数据加载开销。
+当前路径不做：
 
-具体 batch size、训练步数、保存间隔和设备数属于实验设置，不应写死在通用 workflow 中。
+```text
+value function 训练
+advantage 估计
+exponential advantage weighting
+ACP 条件行为克隆
+在线强化学习更新
+```
+
+如果后续要做真正的 AWR 或 value-based IWR，需要额外定义 return / value / advantage，并在训练目标中显式使用这些量，而不能只依赖 `piperx.sample_weight`。
 
 ## 11. 部署注意事项
 
