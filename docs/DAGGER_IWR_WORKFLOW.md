@@ -1,39 +1,36 @@
-# PiperX DAgger / IWR Workflow
+# PiperX DAgger / IWR 流程实现
 
-This document describes a reusable PiperX DAgger data pipeline for converting
-OpenPI human-intervention rollouts into LeRobot datasets, cleaning them, and
-training a weighted behavior cloning policy.
+本文档说明 PiperX DAgger 数据从 OpenPI 人类接管轨迹转换为 LeRobot 数据集、清洗、构造 IWR 权重、计算归一化统计量，并用于加权行为克隆训练的通用实现流程。
 
-The workflow is intentionally written with placeholders instead of machine names,
-private paths, or experiment-specific hyperparameters.
+文档中只使用占位符，不包含机器名、私有路径、具体数据集日期或实验超参。具体实验的路径、batch size、训练步数和显卡配置应放在单独的 launch 脚本中。
 
-## 1. Pipeline Overview
+## 1. 总体链路
 
 ```text
 OpenPI intervention Zarr
-  -> convert to two LeRobot v3 views: full and intervention
-  -> merge multiple LeRobot v3 parts into LeRobot v2.1
-  -> physically clean invalid or stalled frames
-  -> assign IWR-style sample weights
-  -> compute normalization statistics from state/action parquet data
-  -> train a policy with weighted supervised behavior cloning
+  -> 转换为两份 LeRobot v3 视图：full 和 intervention
+  -> 合并多批 LeRobot v3 数据为 LeRobot v2.1
+  -> 物理清洗无效帧、长停顿和不可训练片段
+  -> 写入 IWR 风格的 piperx.sample_weight
+  -> 从 parquet 中快速计算 state/action norm stats
+  -> 用带 sample weight 的 supervised behavior cloning 训练策略
 ```
 
-The training objective is weighted behavior cloning, not advantage-weighted RL:
+当前实现的训练目标是加权行为克隆，不是 AWR，也不做 value learning 或 advantage weighting：
 
 ```text
 loss = sum_i weight_i * BC(policy(observation_i), action_i) / sum_i weight_i
 ```
 
-The intended weight field is:
+训练时读取的权重字段是：
 
 ```text
 piperx.sample_weight
 ```
 
-## 2. Data Semantics
+## 2. 数据语义
 
-The converter keeps the standard policy inputs unchanged:
+转换后保留标准策略训练输入：
 
 ```text
 observation.state              float32[14]
@@ -43,19 +40,27 @@ observation.images.left_wrist  video
 observation.images.right_wrist video
 ```
 
-`observation.state` is not an image. It is the concatenation of:
+`observation.state` 不是 RGB 图像，而是双臂关节状态拼接：
 
 ```text
 left_joint_pos[7] + right_joint_pos[7]
 ```
 
-`action` is always the executed action:
+标准 `action` 始终使用实际执行到从臂上的动作：
 
 ```text
 executed_action_left[7] + executed_action_right[7]
 ```
 
-Additional PiperX fields are preserved for DAgger/IWR analysis:
+因此：
+
+- policy 段的 `action` 是模型实际执行动作。
+- intervention 段的 `action` 是人类接管后经过限幅和平滑、实际执行到机械臂上的动作。
+- 训练目标始终对齐真实执行动作，而不是单独使用模型原始输出或专家原始输入。
+
+## 3. DAgger 附加字段
+
+除标准字段外，转换和清洗流程会保留以下 PiperX 元数据：
 
 ```text
 piperx.policy_action
@@ -73,24 +78,45 @@ piperx.source_id
 piperx.towel_type_id
 ```
 
-The full view contains complete rollout episodes. The intervention view contains
-only continuous human-intervention segments, with each segment stored as a
-separate episode.
+这些字段的作用：
 
-Do not train by simply concatenating full and intervention views. Intervention
-frames already exist inside the full view, so concatenating them directly would
-duplicate those frames. Use the intervention view for inspection, filtering, or
-weight construction.
+- `piperx.policy_action`：模型原本希望执行的动作。
+- `piperx.human_action`：人类接管时给出的专家动作。
+- `piperx.executed_action`：最终实际执行动作，也会写入标准 `action`。
+- `piperx.control_source`：当前帧来自 policy 还是 human intervention。
+- `piperx.intervention_mask`：当前帧是否处在人类接管状态。
+- `piperx.episode_success`：原始 rollout 的成功、失败或未知标签。
+- `piperx.original_episode_index` 和 `piperx.original_frame_index`：回溯到原始 Zarr/LeRobot 数据的位置。
+- `piperx.source_id` 和 `piperx.towel_type_id`：区分不同采集批次和任务物体类型。
 
-## 3. Convert OpenPI Intervention Zarr To LeRobot V3
+## 4. Full / Intervention 双视图
 
-Script:
+转换阶段会生成两份 LeRobot v3 数据：
+
+```text
+full view:         完整 rollout，包含 policy 段和 intervention 段
+intervention view: 只包含连续人类接管片段
+```
+
+full view 的 episode 与原始 rollout 一一对应，不主动切分。
+
+intervention view 会按照 `intervention_mask` 查找连续接管区间，每个连续区间独立成为一个 episode。不同 rollout 中的接管段不会合并，同一 rollout 中不连续的接管段也不会拼接。
+
+训练时不要简单地把 full view 和 intervention view 直接拼在一起，因为 intervention 帧已经存在于 full view 中。否则会重复计算人类接管帧。推荐做法是：
+
+- full view 用作主训练来源。
+- intervention view 用于检查、清洗参考和权重构造。
+- 最终训练只使用清洗后的 full 数据集。
+
+## 5. Zarr 转 LeRobot v3
+
+脚本：
 
 ```text
 scripts/convert_openpi_intervention_to_lerobot_v3_fast.py
 ```
 
-Example:
+通用命令：
 
 ```bash
 python scripts/convert_openpi_intervention_to_lerobot_v3_fast.py \
@@ -105,14 +131,14 @@ python scripts/convert_openpi_intervention_to_lerobot_v3_fast.py \
   --overwrite
 ```
 
-The command writes two outputs:
+输出：
 
 ```text
 full view:         <LEROBOT_V3_FULL_OUTPUT>
 intervention view: <LEROBOT_V3_FULL_OUTPUT>_intervention
 ```
 
-For smoke tests or unit tests, use:
+单元测试或 smoke test 可以关闭视频写入：
 
 ```bash
 python scripts/convert_openpi_intervention_to_lerobot_v3_fast.py \
@@ -126,89 +152,116 @@ python scripts/convert_openpi_intervention_to_lerobot_v3_fast.py \
   --overwrite
 ```
 
-Use a unique `source_id` for each independently collected data batch. Use
-`towel_type` or a similar categorical label to preserve task/domain metadata.
+每个独立采集批次应使用唯一 `source_id`。如果任务中存在不同物体类别或形态，应通过 `towel_type` 等字段保留下来，便于后续分析和采样。
 
-## 4. Merge LeRobot V3 Parts
+## 6. 合并多批 LeRobot v3
 
-Script:
+脚本：
 
 ```text
 scripts/merge_dagger_lerobot_v3_parts_to_v21.py
 ```
 
-The merge step combines multiple converted parts into one LeRobot v2.1 full
-dataset and one LeRobot v2.1 intervention dataset. Keep full and intervention
-views separate.
+合并阶段的目标是把多批转换后的 v3 数据整理成两份 v2.1 数据集：
 
-Use the script help for the exact argument names in your checkout:
+```text
+merged full v2.1
+merged intervention v2.1
+```
+
+合并时应保持 full 和 intervention 两条视图分离。典型输入包括：
+
+```text
+多个 full v3 repo path
+多个 intervention v3 repo path
+full v2.1 输出 repo id/path
+intervention v2.1 输出 repo id/path
+```
+
+运行前可查看脚本参数：
 
 ```bash
 python scripts/merge_dagger_lerobot_v3_parts_to_v21.py --help
 ```
 
-A typical merge should provide:
+合并后需要检查：
 
 ```text
-input full v3 repo paths
-input intervention v3 repo paths
-output full v2.1 repo id/path
-output intervention v2.1 repo id/path
+episode 数量是否符合预期
+frame 数量是否符合预期
+所有 piperx.* 元数据字段是否保留
+intervention 数据是否能映射回 full 数据中的人类接管帧
 ```
 
-After merging, verify that all `piperx.*` metadata fields are still present.
+## 7. 物理清洗与 IWR 权重
 
-## 5. Physically Clean And Assign IWR Weights
-
-Recommended script:
+推荐脚本：
 
 ```text
 scripts/prepare_dagger_iwr_dataset_physical.py
 ```
 
-This route physically removes rejected frames or segments and writes
-`piperx.sample_weight` for training. It avoids requiring the training dataloader
-to understand a separate `piperx.train_mask` field.
+该脚本采用“物理清洗”路线：直接裁掉不可训练帧或片段，并写出新的 LeRobot 数据集。这样训练 dataloader 不需要额外理解 `piperx.train_mask`。
 
-The older script:
+清洗阶段通常处理：
+
+```text
+非有限数值
+长时间停顿
+无效尾帧
+过短片段
+控制源切换边界
+episode success 标签
+原始 episode/frame 索引
+```
+
+输出中会写入：
+
+```text
+piperx.sample_weight
+```
+
+一个常用的简化 IWR 权重策略是让 policy 样本和 intervention 样本的总加权质量接近：
+
+```text
+policy_weight = 1.0
+intervention_weight = num_policy_frames / num_intervention_frames
+```
+
+实际实现可以根据任务需要调整权重，但应保证：
+
+```text
+所有参与训练的 sample_weight 都是有限正数
+policy 和 intervention 的权重含义明确
+权重构造不重复计算 intervention 帧
+```
+
+旧脚本：
 
 ```text
 scripts/prepare_dagger_iwr_dataset.py
 ```
 
-keeps complete episodes and marks trainable samples with `piperx.train_mask`.
-Use it only if the downstream training code is designed to consume that mask.
+这条路线保留完整 episode，并用 `piperx.train_mask` 标记可训练帧。除非训练 loader 明确支持并正确使用 `piperx.train_mask`，否则不推荐作为默认训练输入。
 
-Use the script help for the exact argument names in your checkout:
+## 8. Inspection Package
 
-```bash
-python scripts/prepare_dagger_iwr_dataset_physical.py --help
-```
-
-The cleaning policy should be chosen explicitly for the project. Common checks
-include:
-
-```text
-remove invalid numeric values
-trim long stalls
-remove or trim unusable camera/state tails
-preserve episode success labels
-preserve original episode/frame indices
-write piperx.sample_weight
-```
-
-The cleaned full dataset is the primary training dataset. The cleaned
-intervention dataset is useful for auditing human corrections and weight logic.
-
-## 6. Build An Inspection Package
-
-Script:
+脚本：
 
 ```text
 scripts/build_dagger_iwr_inspection_package.py
 ```
 
-Use this script to export a small visual package for manual checking:
+用于导出小规模人工检查包，对比：
+
+```text
+original full
+cleaned full
+original intervention
+cleaned intervention
+```
+
+通用命令：
 
 ```bash
 python scripts/build_dagger_iwr_inspection_package.py \
@@ -220,38 +273,36 @@ python scripts/build_dagger_iwr_inspection_package.py \
   --overwrite
 ```
 
-The package is for visual validation only. It is not part of the training input.
+inspection package 只用于人工检查，不参与训练。
 
-## 7. Compute Norm Stats
+## 9. 快速计算 Norm Stats
 
-Script:
+脚本：
 
 ```text
 scripts/compute_piperx_norm_stats_from_lerobot_parquet.py
 ```
 
-This script reads only parquet numeric columns:
+该脚本只读取 parquet 中的数值字段：
 
 ```text
 observation.state
 action
 ```
 
-It avoids decoding videos and is therefore preferred for large PiperX datasets
-when image statistics are not needed.
+它不会解码三路 RGB 视频，因此适合大规模 PiperX 数据集。对于 DAgger/IWR 训练，如果图像不需要重新统计，优先使用该脚本。
 
-Use the script help for the exact argument names in your checkout:
+运行前可查看参数：
 
 ```bash
 python scripts/compute_piperx_norm_stats_from_lerobot_parquet.py --help
 ```
 
-The resulting norm stats should be placed where the policy config or checkpoint
-loader expects dataset assets.
+输出的 `norm_stats.json` 应放在策略配置或 checkpoint loader 能找到的资产目录下。
 
-## 8. Train With Weighted Behavior Cloning
+## 10. 加权行为克隆训练
 
-The training code should read:
+训练代码需要读取：
 
 ```text
 observation.state
@@ -260,43 +311,68 @@ action
 piperx.sample_weight
 ```
 
-and apply `piperx.sample_weight` to the supervised behavior cloning loss.
+并在 supervised BC loss 中应用 `piperx.sample_weight`。
 
-Choose batch size, number of steps, save interval, and device count according to
-the dataset size and available compute. Those values are experiment-specific and
-should live in the training launch script, not in this general workflow document.
+当前流程的核心不是重新实现一个完整 RL/AWR 算法，而是在标准 BC 训练中提高人类接管样本的监督权重。这样可以让模型更多学习失败恢复、纠偏和关键接触阶段的人类动作。
 
-If the repository also supports RL, ACP, or advantage-estimation paths, disable
-or bypass them unless the experiment intentionally uses those objectives.
+如果训练仓库同时支持 RL、ACP、value learning 或 advantage estimation，需要确认当前实验是否真的使用这些目标。若目标只是 DAgger/IWR weighted BC，则应禁用或绕过这些额外路径，避免引入不必要的训练逻辑和数据加载开销。
 
-## 9. Deployment Notes
+具体 batch size、训练步数、保存间隔和设备数属于实验设置，不应写死在通用 workflow 中。
 
-Before deployment, confirm that the checkpoint can find the norm stats associated
-with the training dataset. If the serving config expects a different dataset
-asset id, create a documented assets alias or update the config so that the
-loader resolves the correct `norm_stats.json`.
+## 11. 部署注意事项
 
-Run a dry-run or short execution test before long deployments:
+部署前需要确认 checkpoint 能找到训练数据对应的 `norm_stats.json`。
+
+如果 serving config 仍然使用旧的数据集 asset id，应采取以下一种方式：
 
 ```text
-check robot/CAN mapping
-check camera availability
-check policy server connectivity
-check observation/action dimensions
-check action limits and smoothing settings
+更新 serving config 的数据集 asset id
+或创建明确记录的 assets alias
 ```
 
-## 10. Minimal Validation Checklist
-
-Before using a converted dataset for training:
+部署前至少做一次短测试：
 
 ```text
-full episode count matches source rollout count
-intervention segments are split only at control-source boundaries
-state/action dimensions are 14
-video frame counts align with parquet frame counts
-episode success labels are preserved
-original episode/frame indices are preserved
-piperx.sample_weight is finite and positive for trainable samples
-norm stats are computed from the intended cleaned training dataset
+检查 robot/CAN 映射
+检查相机可用性
+检查 policy server 连接
+检查 observation/action 维度
+检查动作限幅和平滑参数
+检查 dry-run 或短时 execute 是否正常
 ```
+
+## 12. 最小验证清单
+
+正式训练前应确认：
+
+```text
+full episode 数量与原始 rollout 数一致
+intervention episode 只按连续接管段切分
+不同 rollout 的接管段没有被拼接
+observation.state 和 action 都是 14 维
+三路视频帧数与 parquet 帧数对齐
+episode success 标签被保留
+original episode/frame 索引被保留
+piperx.sample_weight 有限且为正
+norm stats 来自最终清洗后的训练数据集
+训练时没有把 full 和 intervention 直接重复拼接
+```
+
+## 13. 当前实现边界
+
+当前 IWR 实现可以理解为：
+
+```text
+DAgger 数据收集 + intervention 样本重加权 + supervised BC
+```
+
+它不包含：
+
+```text
+value function 训练
+advantage 估计
+AWR/AC-style policy improvement
+在线强化学习更新
+```
+
+如果后续要做真正的 AWR 或 value-based IWR，需要在数据中额外定义 return/value/advantage，并在训练目标中显式使用这些量，而不是只读取 `piperx.sample_weight`。
