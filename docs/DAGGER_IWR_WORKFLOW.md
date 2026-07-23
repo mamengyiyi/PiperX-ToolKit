@@ -380,21 +380,37 @@ scripts/train_with_rl.py
 
 一键脚本中的当前默认参数如下：
 
-| 参数 | 当前默认值 | 说明 |
-|---|---:|---|
-| `CONFIG` | `pi05_piperx_bimanual_swing_fold_towel_20260531` | OpenPI / PiperX 模型和数据配置 |
-| `DATA_REPO` | cleaned DAgger IWR LeRobot repo id | 清洗后、带 `piperx.sample_weight` 的训练集 |
-| `EXP_NAME` | `dagger_multi_towel_iwr_weighted_bc_4gpu_bs128_steps20000_save5000_001` | checkpoint 实验名 |
-| `BATCH_SIZE` | `128` | 全局 batch size |
-| `NUM_TRAIN_STEPS` | `20000` | 总训练步数 |
-| `FSDP_DEVICES` | `4` | FSDP 使用的 GPU 数 |
-| `TRAIN_NUM_WORKERS` | `8` | 训练 dataloader worker 数 |
-| `NORM_NUM_WORKERS` | `8` | norm_stats 计算 worker 数 |
-| `SAVE_INTERVAL` | `5000` | 每 5000 step 保存一次 checkpoint |
-| `KEEP_PERIOD` | `5000` | checkpoint 周期性保留间隔 |
-| `LOG_INTERVAL` | `10` | 日志打印间隔 |
-| `POLICY_SAMPLE_WEIGHT_FIELD` | `piperx.sample_weight` | supervised BC loss 使用的样本权重字段 |
-| `ACP` | disabled by `--no-acp` | 关闭 ACP 条件提示 / value / advantage 路径 |
+```text
+CONFIG=pi05_piperx_bimanual_swing_fold_towel_20260531
+DATA_REPO=<cleaned DAgger IWR LeRobot repo id>
+EXP_NAME=dagger_multi_towel_iwr_weighted_bc_4gpu_bs128_steps20000_save5000_001
+BATCH_SIZE=128
+NUM_TRAIN_STEPS=20000
+FSDP_DEVICES=4
+TRAIN_NUM_WORKERS=8
+NORM_NUM_WORKERS=8
+SAVE_INTERVAL=5000
+KEEP_PERIOD=5000
+LOG_INTERVAL=10
+POLICY_SAMPLE_WEIGHT_FIELD=piperx.sample_weight
+ACP=disabled by --no-acp
+```
+
+这些参数含义：
+
+- `CONFIG`：OpenPI / PiperX 模型和数据配置。
+- `DATA_REPO`：清洗后、带 `piperx.sample_weight` 的训练集。
+- `EXP_NAME`：checkpoint 实验名。
+- `BATCH_SIZE`：全局 batch size。
+- `NUM_TRAIN_STEPS`：总训练步数。
+- `FSDP_DEVICES`：FSDP 使用的 GPU 数。
+- `TRAIN_NUM_WORKERS`：训练 dataloader worker 数。
+- `NORM_NUM_WORKERS`：norm_stats 计算 worker 数。
+- `SAVE_INTERVAL`：checkpoint 保存间隔。
+- `KEEP_PERIOD`：checkpoint 周期性保留间隔。
+- `LOG_INTERVAL`：日志打印间隔。
+- `POLICY_SAMPLE_WEIGHT_FIELD`：supervised BC loss 使用的样本权重字段。
+- `ACP`：通过 `--no-acp` 关闭 ACP 条件提示 / value / advantage 路径。
 
 这组参数是当前实验设置，不是算法本身的硬性要求。四卡训练使用：
 
